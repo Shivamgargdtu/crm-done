@@ -1056,136 +1056,329 @@ async def get_lead_duplicates(lead_id: str, request: Request):
     
     return [serialize_doc(d) for d in duplicates]
 
-# ============== IMPORT LEADS ==============
+# ============== IMPORT HELPERS ==============
 
-@api_router.post("/leads/import")
-async def import_leads(request: Request, file: UploadFile = File(...)):
-    """Import leads from CSV or Excel file"""
-    user = await get_current_user(request)
-    
-    # Read file
-    content = await file.read()
-    
-    try:
-        if file.filename.endswith('.xlsx') or file.filename.endswith('.xls'):
-            df = pd.read_excel(io.BytesIO(content))
+def parse_lead_row(row, column_mapping, user_id: str, user_name: str) -> dict:
+    """Parse a single DataFrame row into a lead data dict."""
+    lead_data = {
+        "dateAdded": datetime.now(timezone.utc).isoformat(),
+        "responseHistory": [],
+        "callCount": 0,
+        "isDuplicate": False,
+        "duplicateDismissed": False,
+        "status": "active"
+    }
+    responses = []
+    for orig_col, mapped_field in column_mapping.items():
+        value = row.get(orig_col)
+        if pd.isna(value):
+            continue
+        value = str(value).strip()
+        if mapped_field == 'category':
+            lead_data['category'] = fuzzy_category(value)
+        elif mapped_field == 'priority':
+            lead_data['priority'] = fuzzy_priority(value)
+        elif mapped_field == 'pipelineStage':
+            lead_data['pipelineStage'] = fuzzy_pipeline_stage(value)
+        elif mapped_field in ['nextFollowupDate', 'lastContactDate']:
+            lead_data[mapped_field] = parse_date(value)
+        elif mapped_field in ['phone', 'phone2', 'whatsapp', 'whatsapp2']:
+            lead_data[mapped_field] = clean_phone(value)
+        elif mapped_field == 'instagram':
+            lead_data[mapped_field] = clean_instagram(value) or value
+        elif mapped_field in ['portfolioSent', 'priceListSent']:
+            lead_data[mapped_field] = str(value).lower() in ['yes', 'true', '1', 'sent']
+        elif mapped_field in ['response1', 'response2', 'response3']:
+            if value:
+                responses.append(value)
         else:
-            # Try different encodings for CSV
-            for encoding in ['utf-8', 'latin-1', 'cp1252']:
-                try:
-                    df = pd.read_csv(io.BytesIO(content), encoding=encoding)
-                    break
-                except Exception:
-                    continue
+            lead_data[mapped_field] = value
+
+    if 'category' not in lead_data or not lead_data['category']:
+        lead_data['category'] = 'Needs Review'
+    if 'priority' not in lead_data or not lead_data['priority']:
+        lead_data['priority'] = 'Low'
+    if 'pipelineStage' not in lead_data or not lead_data['pipelineStage']:
+        lead_data['pipelineStage'] = 'New Contact'
+
+    lead_data = calculate_ranks(lead_data)
+
+    for resp in responses:
+        lead_data['responseHistory'].append({
+            "response": resp,
+            "timestamp": lead_data['dateAdded'],
+            "teamMember": user_id,
+            "teamMemberName": user_name
+        })
+        lead_data['callCount'] += 1
+
+    if lead_data['responseHistory']:
+        most_common, rank = calculate_most_common_response(lead_data['responseHistory'])
+        lead_data['mostCommonResponse'] = most_common
+        lead_data['mostCommonResponseRank'] = rank
+
+    return lead_data
+
+
+def read_file_to_df(content: bytes, filename: str, nrows=None):
+    """Read CSV/Excel content into a pandas DataFrame."""
+    if filename.endswith('.xlsx') or filename.endswith('.xls'):
+        return pd.read_excel(io.BytesIO(content), nrows=nrows)
+    for encoding in ['utf-8', 'latin-1', 'cp1252']:
+        try:
+            return pd.read_csv(io.BytesIO(content), encoding=encoding, nrows=nrows)
+        except Exception:
+            continue
+    raise HTTPException(status_code=400, detail="Failed to read file with any encoding")
+
+
+def get_match_reason(lead_data: dict, existing: dict) -> str:
+    """Determine why two leads are considered duplicates."""
+    for field in ['phone', 'phone2', 'whatsapp']:
+        if lead_data.get(field):
+            cleaned = clean_phone(lead_data[field])
+            if cleaned:
+                for ef in ['phone', 'phone2', 'whatsapp']:
+                    if existing.get(ef) and cleaned in clean_phone(str(existing.get(ef, ''))):
+                        return f"{field} matches {ef}"
+    if lead_data.get('instagram') and existing.get('instagram'):
+        if clean_instagram(lead_data['instagram']) == clean_instagram(str(existing.get('instagram', ''))):
+            return "instagram"
+    if lead_data.get('companyName') and lead_data.get('city'):
+        if existing.get('companyName') and existing.get('city'):
+            c1 = re.sub(r'\s+', '', lead_data['companyName'].lower())
+            c2 = re.sub(r'\s+', '', str(existing.get('companyName', '')).lower())
+            ci1 = re.sub(r'\s+', '', lead_data['city'].lower())
+            ci2 = re.sub(r'\s+', '', str(existing.get('city', '')).lower())
+            if c1 == c2 and ci1 == ci2:
+                return "companyName + city"
+    return "unknown"
+
+
+# ============== IMPORT ENDPOINTS ==============
+
+@api_router.post("/leads/import/analyze")
+async def analyze_import(request: Request, file: UploadFile = File(...)):
+    """Parse file, detect duplicates, return non-duplicates and duplicate pairs."""
+    user = await get_current_user(request)
+    content = await file.read()
+
+    try:
+        df = read_file_to_df(content, file.filename)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Failed to read file: {str(e)}")
-    
-    # Map columns
+
     column_mapping = {}
     for col in df.columns:
         mapped = map_column_name(str(col))
         if mapped:
-            column_mapping[col] = mapped
-    
-    # Process rows
-    imported = 0
-    duplicates_skipped = 0
+            column_mapping[str(col)] = mapped
+
+    non_duplicates = []
+    duplicates = []
     errors = []
-    
+
     for idx, row in df.iterrows():
         try:
-            lead_data = {
-                "dateAdded": datetime.now(timezone.utc).isoformat(),
-                "responseHistory": [],
-                "callCount": 0,
-                "isDuplicate": False,
-                "duplicateDismissed": False,
-                "status": "active"
-            }
-            
-            responses = []
-            
-            for orig_col, mapped_field in column_mapping.items():
-                value = row.get(orig_col)
-                if pd.isna(value):
-                    continue
-                
-                value = str(value).strip()
-                
-                if mapped_field == 'category':
-                    lead_data['category'] = fuzzy_category(value)
-                elif mapped_field == 'priority':
-                    lead_data['priority'] = fuzzy_priority(value)
-                elif mapped_field == 'pipelineStage':
-                    lead_data['pipelineStage'] = fuzzy_pipeline_stage(value)
-                elif mapped_field in ['nextFollowupDate', 'lastContactDate']:
-                    lead_data[mapped_field] = parse_date(value)
-                elif mapped_field in ['phone', 'phone2', 'whatsapp', 'whatsapp2']:
-                    lead_data[mapped_field] = clean_phone(value)
-                elif mapped_field == 'instagram':
-                    lead_data[mapped_field] = clean_instagram(value) or value
-                elif mapped_field in ['portfolioSent', 'priceListSent']:
-                    lead_data[mapped_field] = str(value).lower() in ['yes', 'true', '1', 'sent']
-                elif mapped_field in ['response1', 'response2', 'response3']:
-                    if value:
-                        responses.append(value)
-                else:
-                    lead_data[mapped_field] = value
-            
-            # Set defaults
-            if 'category' not in lead_data or not lead_data['category']:
-                lead_data['category'] = 'Needs Review'
-            if 'priority' not in lead_data or not lead_data['priority']:
-                lead_data['priority'] = 'Low'
-            if 'pipelineStage' not in lead_data or not lead_data['pipelineStage']:
-                lead_data['pipelineStage'] = 'New Contact'
-            
-            # Skip if no company name
+            lead_data = parse_lead_row(row, column_mapping, user["id"], user.get("name", "Import"))
+
             if not lead_data.get('companyName'):
                 errors.append({"row": idx + 2, "reason": "Missing company name"})
                 continue
-            
-            # Calculate ranks
-            lead_data = calculate_ranks(lead_data)
-            
-            # Add responses to history
-            for resp in responses:
-                lead_data['responseHistory'].append({
-                    "response": resp,
-                    "timestamp": lead_data['dateAdded'],
-                    "teamMember": user["id"],
-                    "teamMemberName": user.get("name", "Import")
-                })
-                lead_data['callCount'] += 1
-            
-            # Calculate most common response
-            if lead_data['responseHistory']:
-                most_common, rank = calculate_most_common_response(lead_data['responseHistory'])
-                lead_data['mostCommonResponse'] = most_common
-                lead_data['mostCommonResponseRank'] = rank
-            
-            # Check for duplicate
+
             existing = await check_and_mark_duplicate(lead_data)
-            if existing and not lead_data.get('duplicateDismissed'):
-                duplicates_skipped += 1
-                # Mark existing lead
-                await db.leads.update_one(
-                    {"_id": ObjectId(existing["id"])},
-                    {"$set": {"duplicateImportAttempted": True}}
-                )
-                continue
-            
-            # Insert lead
-            await db.leads.insert_one(lead_data)
-            imported += 1
-            
+            if existing:
+                reason = get_match_reason(lead_data, existing)
+                # Strip internal fields from incoming for frontend display
+                incoming_clean = {k: v for k, v in lead_data.items() if k not in ['isDuplicate', 'duplicateOf', 'duplicateDismissed']}
+                duplicates.append({
+                    "rowIndex": idx + 2,
+                    "incoming": incoming_clean,
+                    "existing": existing,
+                    "matchReason": reason
+                })
+            else:
+                non_duplicates.append({
+                    "rowIndex": idx + 2,
+                    "data": lead_data
+                })
         except Exception as e:
             errors.append({"row": idx + 2, "reason": str(e)})
-    
+
+    return {
+        "nonDuplicates": non_duplicates,
+        "duplicates": duplicates,
+        "errors": errors[:50],
+        "totalErrors": len(errors),
+        "columnMapping": column_mapping
+    }
+
+
+class BatchImportRequest(BaseModel):
+    leads: List[Dict[str, Any]]
+
+@api_router.post("/leads/import/batch")
+async def batch_import_leads(body: BatchImportRequest, request: Request):
+    """Import a batch of pre-parsed non-duplicate leads."""
+    await get_current_user(request)
+    imported = 0
+    errors = []
+
+    for i, lead_data in enumerate(body.leads):
+        try:
+            # Remove any stale ObjectId-like fields
+            lead_data.pop("id", None)
+            lead_data.pop("_id", None)
+            await db.leads.insert_one(lead_data)
+            imported += 1
+        except Exception as e:
+            errors.append({"index": i, "reason": str(e)})
+
+    return {"imported": imported, "errors": errors}
+
+
+class DuplicateResolution(BaseModel):
+    action: str  # skip, overwrite, import_anyway, merge
+    incoming: Dict[str, Any]
+    existingId: str
+
+class ResolveRequest(BaseModel):
+    resolutions: List[DuplicateResolution]
+
+@api_router.post("/leads/import/resolve")
+async def resolve_duplicates_import(body: ResolveRequest, request: Request):
+    """Process user decisions for duplicate leads."""
+    await get_current_user(request)
+    skipped = 0
+    overwritten = 0
+    merged = 0
+    imported_anyway = 0
+    errors = []
+
+    for res in body.resolutions:
+        try:
+            if res.action == "skip":
+                skipped += 1
+                continue
+
+            elif res.action == "overwrite":
+                update_data = {k: v for k, v in res.incoming.items() if v is not None}
+                update_data.pop("id", None)
+                update_data.pop("_id", None)
+                update_data["isDuplicate"] = False
+                update_data["duplicateOf"] = None
+                await db.leads.replace_one(
+                    {"_id": ObjectId(res.existingId)},
+                    update_data
+                )
+                overwritten += 1
+
+            elif res.action == "import_anyway":
+                new_lead = dict(res.incoming)
+                new_lead.pop("id", None)
+                new_lead.pop("_id", None)
+                new_lead["isDuplicate"] = True
+                new_lead["duplicateOf"] = res.existingId
+                await db.leads.insert_one(new_lead)
+                imported_anyway += 1
+
+            elif res.action == "merge":
+                existing = await db.leads.find_one({"_id": ObjectId(res.existingId)})
+                if not existing:
+                    errors.append({"existingId": res.existingId, "reason": "Existing lead not found"})
+                    continue
+
+                merged_data = {}
+                for key in existing:
+                    if key == "_id":
+                        continue
+                    existing_val = existing.get(key)
+                    incoming_val = res.incoming.get(key)
+                    # For responseHistory, combine both
+                    if key == "responseHistory":
+                        existing_hist = existing_val if isinstance(existing_val, list) else []
+                        incoming_hist = incoming_val if isinstance(incoming_val, list) else []
+                        merged_data[key] = existing_hist + incoming_hist
+                        continue
+                    # For callCount, sum them
+                    if key == "callCount":
+                        merged_data[key] = (existing_val or 0) + (incoming_val or 0)
+                        continue
+                    # Prefer non-empty incoming value, else keep existing
+                    if incoming_val and incoming_val != "" and incoming_val != "Needs Review":
+                        merged_data[key] = incoming_val
+                    elif existing_val:
+                        merged_data[key] = existing_val
+                    else:
+                        merged_data[key] = incoming_val
+
+                merged_data["isDuplicate"] = False
+                merged_data["duplicateOf"] = None
+                merged_data.pop("id", None)
+                merged_data.pop("_id", None)
+
+                # Recalculate most common response
+                if merged_data.get("responseHistory"):
+                    mc, rank = calculate_most_common_response(merged_data["responseHistory"])
+                    merged_data["mostCommonResponse"] = mc
+                    merged_data["mostCommonResponseRank"] = rank
+
+                merged_data = calculate_ranks(merged_data)
+                await db.leads.replace_one({"_id": ObjectId(res.existingId)}, merged_data)
+                merged += 1
+
+        except Exception as e:
+            errors.append({"existingId": res.existingId, "reason": str(e)})
+
+    return {
+        "skipped": skipped,
+        "overwritten": overwritten,
+        "merged": merged,
+        "importedAnyway": imported_anyway,
+        "errors": errors
+    }
+
+
+# Keep legacy import endpoint for backward compat
+@api_router.post("/leads/import")
+async def import_leads(request: Request, file: UploadFile = File(...)):
+    """Legacy import - auto-skips duplicates"""
+    user = await get_current_user(request)
+    content = await file.read()
+    try:
+        df = read_file_to_df(content, file.filename)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to read file: {str(e)}")
+
+    column_mapping = {}
+    for col in df.columns:
+        mapped = map_column_name(str(col))
+        if mapped:
+            column_mapping[str(col)] = mapped
+
+    imported = 0
+    duplicates_skipped = 0
+    errors = []
+
+    for idx, row in df.iterrows():
+        try:
+            lead_data = parse_lead_row(row, column_mapping, user["id"], user.get("name", "Import"))
+            if not lead_data.get('companyName'):
+                errors.append({"row": idx + 2, "reason": "Missing company name"})
+                continue
+            existing = await check_and_mark_duplicate(lead_data)
+            if existing:
+                duplicates_skipped += 1
+                continue
+            await db.leads.insert_one(lead_data)
+            imported += 1
+        except Exception as e:
+            errors.append({"row": idx + 2, "reason": str(e)})
+
     return {
         "imported": imported,
         "duplicatesSkipped": duplicates_skipped,
-        "errors": errors[:50],  # Limit errors returned
+        "errors": errors[:50],
         "totalErrors": len(errors),
         "columnMapping": column_mapping
     }
@@ -1194,50 +1387,28 @@ async def import_leads(request: Request, file: UploadFile = File(...)):
 async def preview_import(request: Request, file: UploadFile = File(...)):
     """Preview first 10 rows of import file"""
     await get_current_user(request)
-    
     content = await file.read()
-    
+
     try:
-        if file.filename.endswith('.xlsx') or file.filename.endswith('.xls'):
-            df = pd.read_excel(io.BytesIO(content), nrows=10)
-        else:
-            for encoding in ['utf-8', 'latin-1', 'cp1252']:
-                try:
-                    df = pd.read_csv(io.BytesIO(content), encoding=encoding, nrows=10)
-                    break
-                except Exception:
-                    continue
+        df_preview = read_file_to_df(content, file.filename, nrows=10)
+        full_df = read_file_to_df(content, file.filename)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Failed to read file: {str(e)}")
-    
-    # Map columns
+
     column_mapping = {}
     unmapped = []
-    for col in df.columns:
+    for col in df_preview.columns:
         mapped = map_column_name(str(col))
         if mapped:
             column_mapping[str(col)] = mapped
         else:
             unmapped.append(str(col))
-    
-    # Get total row count
-    await file.seek(0)
-    content = await file.read()
-    if file.filename.endswith('.xlsx') or file.filename.endswith('.xls'):
-        full_df = pd.read_excel(io.BytesIO(content))
-    else:
-        for encoding in ['utf-8', 'latin-1', 'cp1252']:
-            try:
-                full_df = pd.read_csv(io.BytesIO(content), encoding=encoding)
-                break
-            except Exception:
-                continue
-    
+
     return {
-        "columns": list(df.columns),
+        "columns": list(df_preview.columns),
         "columnMapping": column_mapping,
         "unmappedColumns": unmapped,
-        "preview": df.fillna("").to_dict(orient="records"),
+        "preview": df_preview.fillna("").to_dict(orient="records"),
         "totalRows": len(full_df)
     }
 
