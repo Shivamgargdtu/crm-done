@@ -7,6 +7,10 @@ import Dashboard from "./pages/Dashboard";
 import AllLeads from "./pages/AllLeads";
 import LeadOverview from "./pages/LeadOverview";
 import Pipeline from "./pages/Pipeline";
+import Today from "./pages/Today";
+import Tomorrow from "./pages/Tomorrow";
+import ThisWeek from "./pages/ThisWeek";
+import CategoryPage from "./pages/CategoryPage";
 import Team from "./pages/Team";
 import PlaceholderPage from "./pages/PlaceholderPage";
 import { Toaster } from "./components/ui/sonner";
@@ -59,23 +63,23 @@ function AppRoutes() {
             <Route path="/" element={<ProtectedRoute><Layout /></ProtectedRoute>}>
                 <Route index element={<Navigate to="/dashboard" replace />} />
                 <Route path="dashboard" element={<Dashboard />} />
-                <Route path="today" element={<PlaceholderPage title="Today's Follow-ups" description="View and manage leads scheduled for follow-up today." />} />
-                <Route path="tomorrow" element={<PlaceholderPage title="Tomorrow's Follow-ups" description="View and manage leads scheduled for follow-up tomorrow." />} />
-                <Route path="this-week" element={<PlaceholderPage title="This Week" description="View all leads scheduled for follow-up this week." />} />
+                <Route path="today" element={<Today />} />
+                <Route path="tomorrow" element={<Tomorrow />} />
+                <Route path="this-week" element={<ThisWeek />} />
                 <Route path="leads" element={<AllLeads />} />
                 <Route path="leads/:id" element={<LeadOverview />} />
                 <Route path="pipeline" element={<Pipeline />} />
                 
                 {/* Category Routes */}
-                <Route path="category/meeting-done" element={<PlaceholderPage title="Meeting Done" description="Leads where meetings have been completed." />} />
-                <Route path="category/interested" element={<PlaceholderPage title="Interested" description="Leads who have shown interest." />} />
-                <Route path="category/call-back" element={<PlaceholderPage title="Call Back" description="Leads who requested a callback." />} />
-                <Route path="category/busy" element={<PlaceholderPage title="Busy" description="Leads who were busy during contact." />} />
-                <Route path="category/no-response" element={<PlaceholderPage title="No Response" description="Leads who haven't responded." />} />
-                <Route path="category/foreign" element={<PlaceholderPage title="Foreign" description="International leads." />} />
-                <Route path="category/future-projection" element={<PlaceholderPage title="Future Projection" description="Leads for future follow-up." />} />
-                <Route path="category/needs-review" element={<PlaceholderPage title="Needs Review" description="Leads that need review." />} />
-                <Route path="category/not-interested" element={<PlaceholderPage title="Not Interested" description="Leads who are not interested." />} />
+                <Route path="category/meeting-done" element={<CategoryPage category="Meeting Done" />} />
+                <Route path="category/interested" element={<CategoryPage category="Interested" />} />
+                <Route path="category/call-back" element={<CategoryPage category="Call Back" />} />
+                <Route path="category/busy" element={<CategoryPage category="Busy" />} />
+                <Route path="category/no-response" element={<CategoryPage category="No Response" />} />
+                <Route path="category/foreign" element={<CategoryPage category="Foreign" />} />
+                <Route path="category/future-projection" element={<CategoryPage category="Future Projection" />} />
+                <Route path="category/needs-review" element={<CategoryPage category="Needs Review" />} />
+                <Route path="category/not-interested" element={<CategoryPage category="Not Interested" />} />
                 
                 {/* Other Routes */}
                 <Route path="instagram" element={<PlaceholderPage title="Instagram Leads" description="Leads sourced from Instagram." />} />

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import { Plus, X } from 'lucide-react';
 import { Button } from './ui/button';
@@ -37,7 +37,7 @@ const PIPELINE_STAGES = [
     "Not Answering", "Not Interested"
 ];
 
-export default function AddLeadModal({ open, onClose, onSuccess, teamMembers }) {
+export default function AddLeadModal({ open, onClose, onSuccess, teamMembers, defaultCategory = 'Needs Review' }) {
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState('');
     
@@ -52,7 +52,7 @@ export default function AddLeadModal({ open, onClose, onSuccess, teamMembers }) 
         city: '',
         address: '',
         state: '',
-        category: 'Needs Review',
+        category: defaultCategory,
         priority: 'Medium',
         pipelineStage: 'New Contact',
         assignedTo: '',
@@ -63,6 +63,11 @@ export default function AddLeadModal({ open, onClose, onSuccess, teamMembers }) 
         waSent: false,
         notes: ''
     });
+
+    // Update category when defaultCategory changes
+    useEffect(() => {
+        setFormData(prev => ({ ...prev, category: defaultCategory }));
+    }, [defaultCategory]);
 
     const handleChange = (field, value) => {
         setFormData(prev => ({ ...prev, [field]: value }));
@@ -93,7 +98,7 @@ export default function AddLeadModal({ open, onClose, onSuccess, teamMembers }) 
                 city: '',
                 address: '',
                 state: '',
-                category: 'Needs Review',
+                category: defaultCategory,
                 priority: 'Medium',
                 pipelineStage: 'New Contact',
                 assignedTo: '',
