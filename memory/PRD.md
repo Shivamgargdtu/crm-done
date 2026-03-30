@@ -51,15 +51,54 @@ New Contact, Interested, Send Portfolio, Time Given, Meeting Scheduled, Meeting 
 - ✅ Mobile responsive design with bottom navigation
 - ✅ Placeholder pages for all routes
 
+## What's Been Implemented (Phase 2 - 2026-03-30)
+- ✅ **All Leads Table Page** - Excel-style horizontally scrollable table
+  - Row colors by category (Meeting Done=green, Interested=blue, etc.)
+  - Column sorting (click headers, Shift+click for multi-column)
+  - Filters: Category, Priority, Assigned To, City, Portfolio Sent, Duplicates
+  - Search by company, phone, instagram, city
+  - Pagination (25/50/100/200 rows per page)
+  - Bulk select, bulk delete, bulk reassign
+  - Export CSV button
+- ✅ **CSV/Excel Import Feature**
+  - Drag-and-drop upload
+  - Auto column mapping (Company Name, Phone, WhatsApp, Instagram, Email, City, Category, etc.)
+  - Fuzzy category/priority/pipeline stage mapping
+  - Date parsing (multiple formats including Excel serial numbers)
+  - Duplicate detection during import
+  - Preview first 10 rows before confirming
+  - Import summary with success/duplicate/error counts
+- ✅ **Add Lead Modal** - Full form with all fields
+- ✅ **Call Log Panel**
+  - Log New Call form with response dropdown (20+ response types)
+  - Notes, Duration, WA Number Used fields
+  - Next follow-up date/time picker
+  - Portfolio Sent, Price List Sent, WA Sent toggles
+  - Full call history timeline with team member color tags
+- ✅ **Lead Overview Page** (/leads/:id)
+  - Company header with category/priority badges
+  - Contact details with click-to-call, mailto links
+  - Location with Google Maps embed
+  - WhatsApp buttons (primary/secondary with switch)
+  - Lead details with inline editing
+  - Portfolio/Price List/WA sent toggles
+  - Call log timeline
+  - Edit modal for full updates
+  - Delete with confirmation
+- ✅ **Duplicate Detection**
+  - Auto-detect by phone, instagram, or companyName+city
+  - Duplicate badge on rows with amber border
+  - "Show Duplicates Only" filter toggle
+
 ## Prioritized Backlog
 
 ### P0 - Critical (Next Phase)
-- [ ] CSV/Excel import for leads
-- [ ] Lead detail view/edit modal
-- [ ] Response history logging per lead
+- ✅ CSV/Excel import for leads - DONE
+- ✅ Lead detail view/edit modal - DONE
+- ✅ Response history logging per lead - DONE
 
 ### P1 - High Priority
-- [ ] Today/Tomorrow/This Week filtered views
+- [ ] Today/Tomorrow/This Week filtered views with real data
 - [ ] Category-specific pages with lead lists
 - [ ] Pipeline Kanban view
 - [ ] Lead assignment to team members
@@ -69,17 +108,16 @@ New Contact, Interested, Send Portfolio, Time Given, Meeting Scheduled, Meeting 
 - [ ] Reminders system
 - [ ] Weekly messages templates
 - [ ] Instagram/WhatsApp lead source filters
-- [ ] Bulk actions on leads
+- [ ] Bulk category/priority updates
 
 ### P3 - Nice to Have
 - [ ] Dashboard charts/analytics
-- [ ] Export leads to CSV
-- [ ] Duplicate lead detection
+- [ ] Duplicate merge functionality
 - [ ] Lead notes and activity timeline
 - [ ] Settings page (profile, notifications)
 
 ## Next Tasks (Immediate)
-1. Implement CSV/Excel lead import feature
-2. Build lead detail view with edit functionality
-3. Implement Today's Follow-ups page with real data
-4. Add lead creation modal
+1. Build Today's Follow-ups page with real data
+2. Build Category pages (Meeting Done, Interested, etc.)
+3. Implement Pipeline Kanban board view
+4. Add Meetings Calendar
