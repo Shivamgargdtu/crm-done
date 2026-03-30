@@ -156,8 +156,11 @@ class WedUsCRMTester:
             
             if response.status_code == 200:
                 leads_data = response.json()
-                success = isinstance(leads_data, list)
-                details = f"Expected list, got {type(leads_data)}" if not success else f"Found {len(leads_data)} leads"
+                success = (isinstance(leads_data, dict) and 
+                          "leads" in leads_data and 
+                          isinstance(leads_data["leads"], list) and
+                          "total" in leads_data)
+                details = f"Expected dict with 'leads' list, got {type(leads_data)}" if not success else f"Found {len(leads_data.get('leads', []))} leads"
                 self.log_test("Leads Endpoint", success, details)
                 return success, leads_data
             else:
@@ -190,7 +193,75 @@ class WedUsCRMTester:
             self.log_test("Create Team Member (Admin)", False, str(e))
             return False, None
 
-    def test_logout(self):
+    def test_create_lead(self):
+        """Test creating a new lead"""
+        try:
+            new_lead = {
+                "companyName": f"Test Company {datetime.now().strftime('%H%M%S')}",
+                "phone": "9876543210",
+                "email": "test@example.com",
+                "city": "Mumbai",
+                "category": "Needs Review",
+                "priority": "Medium"
+            }
+            response = self.session.post(f"{self.base_url}/api/leads", json=new_lead, timeout=10)
+            
+            if response.status_code == 200:
+                lead_data = response.json()
+                success = (lead_data.get("companyName") == new_lead["companyName"] and 
+                          "id" in lead_data)
+                details = f"Created lead: {lead_data.get('companyName')}" if success else "Failed to create lead properly"
+                self.log_test("Create Lead", success, details)
+                return success, lead_data
+            else:
+                self.log_test("Create Lead", False, f"Status: {response.status_code}, Response: {response.text}")
+                return False, None
+        except Exception as e:
+            self.log_test("Create Lead", False, str(e))
+            return False, None
+
+    def test_get_single_lead(self, lead_id):
+        """Test getting a single lead by ID"""
+        try:
+            response = self.session.get(f"{self.base_url}/api/leads/{lead_id}", timeout=10)
+            
+            if response.status_code == 200:
+                lead_data = response.json()
+                success = lead_data.get("id") == lead_id
+                details = f"Retrieved lead: {lead_data.get('companyName')}" if success else "Lead data mismatch"
+                self.log_test("Get Single Lead", success, details)
+                return success, lead_data
+            else:
+                self.log_test("Get Single Lead", False, f"Status: {response.status_code}")
+                return False, None
+        except Exception as e:
+            self.log_test("Get Single Lead", False, str(e))
+            return False, None
+
+    def test_add_response_to_lead(self, lead_id):
+        """Test adding a response/call log to a lead"""
+        try:
+            response_data = {
+                "response": "Interested",
+                "notes": "Customer showed interest in our services",
+                "duration": 5,
+                "nextFollowupDate": "2024-12-31T10:00:00"
+            }
+            response = self.session.post(f"{self.base_url}/api/leads/{lead_id}/response", json=response_data, timeout=10)
+            
+            if response.status_code == 200:
+                lead_data = response.json()
+                success = (len(lead_data.get("responseHistory", [])) > 0 and
+                          lead_data.get("callCount", 0) > 0)
+                details = f"Added response, call count: {lead_data.get('callCount')}" if success else "Failed to add response"
+                self.log_test("Add Response to Lead", success, details)
+                return success, lead_data
+            else:
+                self.log_test("Add Response to Lead", False, f"Status: {response.status_code}, Response: {response.text}")
+                return False, None
+        except Exception as e:
+            self.log_test("Add Response to Lead", False, str(e))
+            return False, None
         """Test logout functionality"""
         try:
             response = self.session.post(f"{self.base_url}/api/auth/logout", timeout=10)
@@ -223,8 +294,15 @@ class WedUsCRMTester:
         self.test_team_endpoint()
         self.test_leads_count_endpoint()
         self.test_dashboard_stats_endpoint()
-        self.test_leads_endpoint()
+        leads_success, leads_data = self.test_leads_endpoint()
         self.test_create_team_member_admin_only()
+        
+        # Test lead CRUD operations
+        create_success, new_lead = self.test_create_lead()
+        if create_success and new_lead:
+            lead_id = new_lead.get("id")
+            self.test_get_single_lead(lead_id)
+            self.test_add_response_to_lead(lead_id)
         
         # Test team member login (new session)
         team_session = requests.Session()
@@ -250,6 +328,18 @@ class WedUsCRMTester:
                 print(f"  - {test['test']}: {test['details']}")
         
         return self.tests_passed == self.tests_run
+
+    def test_logout(self):
+        """Test logout functionality"""
+        try:
+            response = self.session.post(f"{self.base_url}/api/auth/logout", timeout=10)
+            success = response.status_code == 200
+            details = f"Status: {response.status_code}" if not success else ""
+            self.log_test("Logout", success, details)
+            return success
+        except Exception as e:
+            self.log_test("Logout", False, str(e))
+            return False
 
 def main():
     tester = WedUsCRMTester()

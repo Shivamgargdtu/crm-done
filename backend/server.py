@@ -1,19 +1,24 @@
 from dotenv import load_dotenv
 load_dotenv()
 
-from fastapi import FastAPI, APIRouter, HTTPException, Request, Response, Depends
+from fastapi import FastAPI, APIRouter, HTTPException, Request, Response, Depends, UploadFile, File, Query
+from fastapi.responses import StreamingResponse
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 import os
 import logging
+import io
+import csv
+import re
 from pathlib import Path
 from pydantic import BaseModel, Field, ConfigDict, EmailStr
-from typing import List, Optional, Any
+from typing import List, Optional, Any, Dict
 import uuid
 from datetime import datetime, timezone, timedelta
 import bcrypt
 import jwt
 from bson import ObjectId
+import pandas as pd
 
 # MongoDB connection
 mongo_url = os.environ['MONGO_URL']
@@ -191,18 +196,25 @@ class LeadUpdate(BaseModel):
     priceListSent: Optional[bool] = None
     waSent: Optional[bool] = None
     notes: Optional[str] = None
+    dateMarkedNotInterested: Optional[str] = None
 
 class ResponseHistoryEntry(BaseModel):
     response: str
     notes: Optional[str] = None
     timestamp: Optional[str] = None
     teamMember: Optional[str] = None
+    teamMemberName: Optional[str] = None
     duration: Optional[int] = None
     waNumberUsed: Optional[int] = None
     portfolioSent: Optional[bool] = False
     priceListSent: Optional[bool] = False
     waSent: Optional[bool] = False
     nextFollowupDate: Optional[str] = None
+
+class BulkAction(BaseModel):
+    leadIds: List[str]
+    action: str
+    value: Optional[str] = None
 
 # ============== CATEGORY/PRIORITY MAPPINGS ==============
 
@@ -245,6 +257,154 @@ PIPELINE_STAGES = [
 ]
 
 TEAM_COLORS = ["#E8536A", "#3B82F6", "#10B981", "#F59E0B", "#8B5CF6", "#EC4899", "#06B6D4"]
+
+ALL_RESPONSES = [
+    "Interested", "Not Interested", "Call Again 1", "Call Again 2", "Call Again 3",
+    "Send Portfolio", "Portfolio Sent — Will Let Us Know", "Meeting Scheduled", "Meeting Done",
+    "Time Given", "Not Answering / Voicemail", "Busy — Call Back Later", "Wrong Number",
+    "Switch Off", "In Meeting — Send Details", "Low Budget", "Inhouse Team",
+    "Project Follow-up", "Weekly Message Sent", "Will Let Us Know"
+]
+
+# ============== IMPORT HELPERS ==============
+
+def clean_phone(phone: str) -> str:
+    """Clean phone number to plain digits"""
+    if not phone:
+        return ""
+    cleaned = re.sub(r'[^\d]', '', str(phone))
+    if cleaned.startswith('91') and len(cleaned) == 12:
+        cleaned = cleaned[2:]
+    return cleaned[-10:] if len(cleaned) >= 10 else cleaned
+
+def clean_instagram(handle: str) -> str:
+    """Clean instagram handle"""
+    if not handle:
+        return ""
+    return str(handle).strip().lower().lstrip('@')
+
+def fuzzy_category(value: str) -> str:
+    """Map fuzzy category values to standard categories"""
+    if not value:
+        return "Needs Review"
+    v = re.sub(r'[^\w\s]', '', str(value).lower().strip())
+    mappings = {
+        'interested': 'Interested', 'intrested': 'Interested', 'hot lead': 'Interested',
+        'meeting done': 'Meeting Done', 'met': 'Meeting Done', 'md': 'Meeting Done',
+        'call back': 'Call Back', 'callback': 'Call Back', 'follow up': 'Call Back', 'followup': 'Call Back', 'call again': 'Call Back', 'cb': 'Call Back',
+        'busy': 'Busy', 'retry': 'Busy', 'call later': 'Busy', 'busy retry': 'Busy',
+        'no response': 'No Response', 'nr': 'No Response', 'not reachable': 'No Response', 'not picking': 'No Response', 'no answer': 'No Response',
+        'foreign': 'Foreign', 'international': 'Foreign', 'nri': 'Foreign', 'abroad': 'Foreign', 'overseas': 'Foreign',
+        'future': 'Future Projection', 'future projection': 'Future Projection', 'not now': 'Future Projection', 'future lead': 'Future Projection',
+        'not interested': 'Not Interested', 'ni': 'Not Interested', 'declined': 'Not Interested', 'rejected': 'Not Interested', 'not intrested': 'Not Interested',
+        'needs review': 'Needs Review'
+    }
+    for key, val in mappings.items():
+        if key in v:
+            return val
+    return "Needs Review"
+
+def fuzzy_priority(value: str) -> str:
+    """Map fuzzy priority values"""
+    if not value:
+        return "Low"
+    v = str(value).lower().strip()
+    if any(x in v for x in ['highest', 'urgent', 'very high', 'top']):
+        return "Highest"
+    if any(x in v for x in ['high', 'important']):
+        return "High"
+    if any(x in v for x in ['medium', 'mid', 'normal']):
+        return "Medium"
+    if 'low' in v:
+        return "Low"
+    return "Low"
+
+def fuzzy_pipeline_stage(value: str) -> str:
+    """Map fuzzy pipeline stage values"""
+    if not value:
+        return "Unknown"
+    v = str(value).lower().strip()
+    mappings = {
+        'new': 'New Contact', 'fresh': 'New Contact', 'new contact': 'New Contact',
+        'interested': 'Interested',
+        'portfolio sent': 'Send Portfolio', 'send portfolio': 'Send Portfolio',
+        'time given': 'Time Given',
+        'meeting scheduled': 'Meeting Scheduled', 'meeting fixed': 'Meeting Scheduled', 'appointment': 'Meeting Scheduled',
+        'meeting done': 'Meeting Done', 'met': 'Meeting Done',
+        'project follow': 'Project Follow-up', 'post meeting': 'Project Follow-up',
+        'onboarded': 'Onboarded', 'client': 'Onboarded', 'confirmed': 'Onboarded', 'booked': 'Onboarded',
+        'call again 1': 'Call Again 1', 'retry 1': 'Call Again 1',
+        'call again 2': 'Call Again 2', 'retry 2': 'Call Again 2',
+        'call again 3': 'Call Again 3', 'retry 3': 'Call Again 3',
+        'not answering': 'Not Answering', 'no answer': 'Not Answering', 'not picking': 'Not Answering',
+        'not interested': 'Not Interested'
+    }
+    for key, val in mappings.items():
+        if key in v:
+            return val
+    return "Unknown"
+
+def parse_date(value) -> Optional[str]:
+    """Parse various date formats to ISO string"""
+    if not value or pd.isna(value):
+        return None
+    
+    # If already datetime
+    if isinstance(value, datetime):
+        return value.isoformat()
+    
+    # Excel serial number
+    if isinstance(value, (int, float)):
+        try:
+            excel_date = pd.Timestamp('1899-12-30') + pd.Timedelta(days=int(value))
+            return excel_date.isoformat()
+        except Exception:
+            pass
+    
+    value = str(value).strip()
+    formats = [
+        '%d/%m/%Y', '%d-%m-%Y', '%Y-%m-%d', '%m/%d/%Y',
+        '%d %b %Y', '%d %B %Y', '%Y/%m/%d', '%d.%m.%Y'
+    ]
+    for fmt in formats:
+        try:
+            return datetime.strptime(value, fmt).isoformat()
+        except ValueError:
+            continue
+    return None
+
+def map_column_name(col: str) -> Optional[str]:
+    """Map CSV column names to lead fields"""
+    col = col.lower().strip()
+    mappings = {
+        'companyName': ['company', 'company name', 'firm', 'brand', 'client name', 'name', 'business name', 'companyname'],
+        'phone': ['phone', 'phone number', 'mobile', 'contact', 'number', 'ph', 'mob', 'cell', 'phone 1', 'primary phone', 'phone1'],
+        'phone2': ['phone 2', 'phone2', 'alternate', 'alt phone', 'secondary', 'number 2', 'alternate phone'],
+        'whatsapp': ['whatsapp', 'wa', 'wp', 'whatsapp number', 'wa number', 'whatsapp1', 'whatsapp 1'],
+        'whatsapp2': ['whatsapp 2', 'wa2', 'wp2', 'whatsapp2', 'second whatsapp'],
+        'instagram': ['instagram', 'insta', 'handle', 'ig', 'instagram handle', '@handle', 'insta handle'],
+        'email': ['email', 'mail', 'email id', 'e-mail', 'emailid'],
+        'city': ['city', 'location', 'place', 'region', 'area'],
+        'category': ['category', 'cat', 'type', 'lead type', 'status'],
+        'assignedTo': ['assigned to', 'assigned', 'owner', 'handled by', 'team member', 'rep', 'assignedto'],
+        'notes': ['notes', 'feedback', 'remarks', 'comments', 'description', 'note'],
+        'response1': ['response 1', 'response1', 'r1', 'call 1', 'first response'],
+        'response2': ['response 2', 'response2', 'r2', 'call 2', 'second response'],
+        'response3': ['response 3', 'response3', 'r3', 'call 3', 'third response'],
+        'nextFollowupDate': ['next follow-up', 'followup date', 'next call', 'callback date', 'follow up date', 'nextfollowupdate', 'next followup'],
+        'lastContactDate': ['last contact', 'last contacted', 'last call date', 'date of last contact', 'lastcontactdate'],
+        'portfolioSent': ['portfolio sent', 'portfolio', 'port sent', 'portfoliosent'],
+        'priceListSent': ['price list sent', 'price list', 'pricelist', 'pricelistsent'],
+        'pipelineStage': ['pipeline', 'stage', 'pipeline stage', 'workflow', 'pipelinestage'],
+        'sourceSheet': ['source', 'source sheet', 'lead source', 'from', 'sourcesheet'],
+        'priority': ['priority', 'importance'],
+        'address': ['address', 'full address', 'addr'],
+        'state': ['state', 'province']
+    }
+    for field, aliases in mappings.items():
+        if col in aliases:
+            return field
+    return None
 
 # ============== AUTH ROUTES ==============
 
@@ -324,7 +484,6 @@ async def create_team_member(member: TeamMemberCreate, request: Request):
     if existing:
         raise HTTPException(status_code=400, detail="Email already exists")
     
-    # Assign color if not provided
     count = await db.users.count_documents({})
     color = member.color or TEAM_COLORS[count % len(TEAM_COLORS)]
     
@@ -386,7 +545,15 @@ async def get_leads(
     assignedTo: Optional[str] = None,
     search: Optional[str] = None,
     source: Optional[str] = None,
-    limit: int = 100,
+    city: Optional[str] = None,
+    portfolioSent: Optional[bool] = None,
+    mostCommonResponse: Optional[str] = None,
+    showDuplicatesOnly: Optional[bool] = False,
+    sortField: Optional[str] = "categoryRank",
+    sortDirection: Optional[int] = 1,
+    sortField2: Optional[str] = None,
+    sortDirection2: Optional[int] = 1,
+    limit: int = 50,
     skip: int = 0
 ):
     user = await get_current_user(request)
@@ -405,24 +572,57 @@ async def get_leads(
         query["priority"] = priority
     if pipelineStage:
         query["pipelineStage"] = pipelineStage
+    if city:
+        query["city"] = {"$regex": city, "$options": "i"}
+    if portfolioSent is not None:
+        query["portfolioSent"] = portfolioSent
+    if mostCommonResponse:
+        query["mostCommonResponse"] = mostCommonResponse
+    if showDuplicatesOnly:
+        query["isDuplicate"] = True
+        query["duplicateDismissed"] = {"$ne": True}
     if source == "instagram":
-        query["instagram"] = {"$exists": True, "$ne": None, "$ne": ""}
-    if source == "whatsapp":
+        query["instagram"] = {"$exists": True, "$nin": [None, ""]}
+    elif source == "whatsapp":
         query["$or"] = [
-            {"whatsapp": {"$exists": True, "$ne": None, "$ne": ""}},
-            {"whatsapp2": {"$exists": True, "$ne": None, "$ne": ""}}
+            {"whatsapp": {"$exists": True, "$nin": [None, ""]}},
+            {"whatsapp2": {"$exists": True, "$nin": [None, ""]}}
         ]
+    elif source:
+        query["sourceSheet"] = {"$regex": source, "$options": "i"}
+    
     if search:
-        query["$or"] = [
+        search_query = {"$or": [
             {"companyName": {"$regex": search, "$options": "i"}},
             {"email": {"$regex": search, "$options": "i"}},
             {"phone": {"$regex": search, "$options": "i"}},
+            {"phone2": {"$regex": search, "$options": "i"}},
+            {"instagram": {"$regex": search, "$options": "i"}},
             {"city": {"$regex": search, "$options": "i"}}
-        ]
+        ]}
+        if query:
+            query = {"$and": [query, search_query]}
+        else:
+            query = search_query
     
-    leads = await db.leads.find(query, {"_id": 1, "companyName": 1, "phone": 1, "email": 1, "city": 1, "state": 1, "category": 1, "categoryRank": 1, "priority": 1, "priorityRank": 1, "pipelineStage": 1, "assignedTo": 1, "nextFollowupDate": 1, "lastContactDate": 1, "dateAdded": 1, "instagram": 1, "whatsapp": 1, "callCount": 1, "mostCommonResponse": 1}).sort([("categoryRank", 1), ("priorityRank", 1)]).skip(skip).limit(limit).to_list(limit)
+    # Build sort
+    sort_list = []
+    if sortField:
+        sort_list.append((sortField, sortDirection))
+    if sortField2:
+        sort_list.append((sortField2, sortDirection2))
+    if not sort_list:
+        sort_list = [("categoryRank", 1), ("priorityRank", 1)]
     
-    return [serialize_doc(lead) for lead in leads]
+    total = await db.leads.count_documents(query)
+    leads = await db.leads.find(query).sort(sort_list).skip(skip).limit(limit).to_list(limit)
+    
+    return {
+        "leads": [serialize_doc(lead) for lead in leads],
+        "total": total,
+        "skip": skip,
+        "limit": limit
+    }
 
 @api_router.get("/leads/count")
 async def get_leads_count(request: Request):
@@ -432,7 +632,6 @@ async def get_leads_count(request: Request):
     if user["role"] == "team_member":
         base_query["assignedTo"] = user["id"]
     
-    # Get today's date range
     today = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
     tomorrow = today + timedelta(days=1)
     week_end = today + timedelta(days=7)
@@ -451,11 +650,76 @@ async def get_leads_count(request: Request):
         "futureProjection": await db.leads.count_documents({**base_query, "category": "Future Projection"}),
         "needsReview": await db.leads.count_documents({**base_query, "category": "Needs Review"}),
         "notInterested": await db.leads.count_documents({**base_query, "category": "Not Interested"}),
-        "instagram": await db.leads.count_documents({**base_query, "instagram": {"$exists": True, "$ne": None, "$ne": ""}}),
-        "whatsapp": await db.leads.count_documents({**base_query, "$or": [{"whatsapp": {"$exists": True, "$ne": None, "$ne": ""}}, {"whatsapp2": {"$exists": True, "$ne": None, "$ne": ""}}]})
+        "instagram": await db.leads.count_documents({**base_query, "instagram": {"$exists": True, "$nin": [None, ""]}}),
+        "whatsapp": await db.leads.count_documents({**base_query, "$or": [{"whatsapp": {"$exists": True, "$nin": [None, ""]}}, {"whatsapp2": {"$exists": True, "$nin": [None, ""]}}]}),
+        "duplicates": await db.leads.count_documents({**base_query, "isDuplicate": True, "duplicateDismissed": {"$ne": True}})
     }
     
     return counts
+
+@api_router.get("/leads/cities")
+async def get_cities(request: Request):
+    """Get unique cities for filter dropdown"""
+    await get_current_user(request)
+    cities = await db.leads.distinct("city")
+    return [c for c in cities if c]
+
+@api_router.get("/leads/sources")
+async def get_sources(request: Request):
+    """Get unique sources for filter dropdown"""
+    await get_current_user(request)
+    sources = await db.leads.distinct("sourceSheet")
+    return [s for s in sources if s]
+
+@api_router.get("/leads/export")
+async def export_leads(
+    request: Request,
+    category: Optional[str] = None,
+    priority: Optional[str] = None,
+    assignedTo: Optional[str] = None,
+    search: Optional[str] = None,
+    city: Optional[str] = None
+):
+    """Export leads to CSV"""
+    user = await get_current_user(request)
+    
+    query = {}
+    if user["role"] == "team_member":
+        query["assignedTo"] = user["id"]
+    elif assignedTo:
+        query["assignedTo"] = assignedTo
+    
+    if category:
+        query["category"] = category
+    if priority:
+        query["priority"] = priority
+    if city:
+        query["city"] = {"$regex": city, "$options": "i"}
+    if search:
+        query["$or"] = [
+            {"companyName": {"$regex": search, "$options": "i"}},
+            {"phone": {"$regex": search, "$options": "i"}},
+            {"city": {"$regex": search, "$options": "i"}}
+        ]
+    
+    leads = await db.leads.find(query, {"_id": 0}).to_list(10000)
+    
+    output = io.StringIO()
+    if leads:
+        writer = csv.DictWriter(output, fieldnames=leads[0].keys())
+        writer.writeheader()
+        for lead in leads:
+            # Flatten responseHistory
+            if 'responseHistory' in lead:
+                lead['responseHistory'] = str(lead['responseHistory'])
+            writer.writerow(lead)
+    
+    output.seek(0)
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename=leads_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"}
+    )
 
 @api_router.get("/leads/{lead_id}")
 async def get_lead(lead_id: str, request: Request):
@@ -473,7 +737,7 @@ async def get_lead(lead_id: str, request: Request):
 
 @api_router.post("/leads")
 async def create_lead(lead: LeadCreate, request: Request):
-    user = await get_current_user(request)
+    await get_current_user(request)
     
     lead_data = lead.model_dump()
     lead_data = calculate_ranks(lead_data)
@@ -484,6 +748,9 @@ async def create_lead(lead: LeadCreate, request: Request):
     lead_data["duplicateDismissed"] = False
     lead_data["mostCommonResponse"] = None
     lead_data["mostCommonResponseRank"] = None
+    
+    # Check for duplicates
+    await check_and_mark_duplicate(lead_data)
     
     result = await db.leads.insert_one(lead_data)
     lead_data["_id"] = result.inserted_id
@@ -505,7 +772,31 @@ async def update_lead(lead_id: str, lead_update: LeadUpdate, request: Request):
     update_data = {k: v for k, v in lead_update.model_dump().items() if v is not None}
     update_data = calculate_ranks(update_data)
     
+    # If category changed to Not Interested, set dateMarkedNotInterested
+    if update_data.get("category") == "Not Interested" and lead.get("category") != "Not Interested":
+        update_data["dateMarkedNotInterested"] = datetime.now(timezone.utc).isoformat()
+    
     await db.leads.update_one({"_id": ObjectId(lead_id)}, {"$set": update_data})
+    
+    updated_lead = await db.leads.find_one({"_id": ObjectId(lead_id)})
+    return serialize_doc(updated_lead)
+
+@api_router.patch("/leads/{lead_id}")
+async def patch_lead(lead_id: str, updates: dict, request: Request):
+    """Inline edit single field"""
+    user = await get_current_user(request)
+    
+    lead = await db.leads.find_one({"_id": ObjectId(lead_id)})
+    if not lead:
+        raise HTTPException(status_code=404, detail="Lead not found")
+    
+    if user["role"] == "team_member" and lead.get("assignedTo") != user["id"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    # Recalculate ranks if needed
+    updates = calculate_ranks(updates)
+    
+    await db.leads.update_one({"_id": ObjectId(lead_id)}, {"$set": updates})
     
     updated_lead = await db.leads.find_one({"_id": ObjectId(lead_id)})
     return serialize_doc(updated_lead)
@@ -518,13 +809,13 @@ async def add_response_history(lead_id: str, entry: ResponseHistoryEntry, reques
     if not lead:
         raise HTTPException(status_code=404, detail="Lead not found")
     
-    # Check access
     if user["role"] == "team_member" and lead.get("assignedTo") != user["id"]:
         raise HTTPException(status_code=403, detail="Access denied")
     
     entry_data = entry.model_dump()
     entry_data["timestamp"] = datetime.now(timezone.utc).isoformat()
     entry_data["teamMember"] = user["id"]
+    entry_data["teamMemberName"] = user.get("name", "Unknown")
     
     # Update response history and recalculate most common response
     response_history = lead.get("responseHistory", [])
@@ -532,16 +823,46 @@ async def add_response_history(lead_id: str, entry: ResponseHistoryEntry, reques
     
     most_common, rank = calculate_most_common_response(response_history)
     
+    update_data = {
+        "mostCommonResponse": most_common,
+        "mostCommonResponseRank": rank,
+        "lastContactDate": entry_data["timestamp"]
+    }
+    
+    # Update category based on response
+    response_to_category = {
+        "Interested": "Interested",
+        "Not Interested": "Not Interested",
+        "Meeting Done": "Meeting Done",
+        "Busy — Call Back Later": "Busy",
+        "Call Again 1": "Call Back",
+        "Call Again 2": "Call Back",
+        "Call Again 3": "Call Back",
+        "Not Answering / Voicemail": "No Response"
+    }
+    if entry_data["response"] in response_to_category:
+        new_cat = response_to_category[entry_data["response"]]
+        update_data["category"] = new_cat
+        update_data["categoryRank"] = CATEGORY_RANK.get(new_cat, 99)
+    
+    # Update portfolio/pricelist/wa sent flags
+    if entry_data.get("portfolioSent"):
+        update_data["portfolioSent"] = True
+    if entry_data.get("priceListSent"):
+        update_data["priceListSent"] = True
+    if entry_data.get("waSent"):
+        update_data["waSent"] = True
+    
+    # Update next follow-up
+    if entry_data.get("nextFollowupDate"):
+        update_data["nextFollowupDate"] = entry_data["nextFollowupDate"]
+    
     await db.leads.update_one(
         {"_id": ObjectId(lead_id)},
         {
             "$push": {"responseHistory": entry_data},
             "$inc": {"callCount": 1},
-            "$set": {
-                "mostCommonResponse": most_common,
-                "mostCommonResponseRank": rank,
-                "lastContactDate": entry_data["timestamp"]
-            }
+            "$set": update_data
         }
     )
     
@@ -557,6 +878,368 @@ async def delete_lead(lead_id: str, request: Request):
         raise HTTPException(status_code=404, detail="Lead not found")
     
     return {"message": "Lead deleted"}
+
+@api_router.post("/leads/bulk")
+async def bulk_action(action: BulkAction, request: Request):
+    """Perform bulk actions on leads"""
+    user = await get_current_user(request)
+    
+    if action.action == "delete":
+        await require_admin(request)
+        result = await db.leads.delete_many({
+            "_id": {"$in": [ObjectId(id) for id in action.leadIds]}
+        })
+        return {"message": f"Deleted {result.deleted_count} leads"}
+    
+    elif action.action == "reassign":
+        if user["role"] != "admin":
+            raise HTTPException(status_code=403, detail="Admin access required")
+        await db.leads.update_many(
+            {"_id": {"$in": [ObjectId(id) for id in action.leadIds]}},
+            {"$set": {"assignedTo": action.value}}
+        )
+        return {"message": f"Reassigned {len(action.leadIds)} leads"}
+    
+    elif action.action == "update_category":
+        update_data = {"category": action.value}
+        update_data = calculate_ranks(update_data)
+        await db.leads.update_many(
+            {"_id": {"$in": [ObjectId(id) for id in action.leadIds]}},
+            {"$set": update_data}
+        )
+        return {"message": f"Updated {len(action.leadIds)} leads"}
+    
+    elif action.action == "update_priority":
+        update_data = {"priority": action.value}
+        update_data = calculate_ranks(update_data)
+        await db.leads.update_many(
+            {"_id": {"$in": [ObjectId(id) for id in action.leadIds]}},
+            {"$set": update_data}
+        )
+        return {"message": f"Updated {len(action.leadIds)} leads"}
+    
+    raise HTTPException(status_code=400, detail="Invalid action")
+
+# ============== DUPLICATE DETECTION ==============
+
+async def check_and_mark_duplicate(lead_data: dict, exclude_id: str = None) -> Optional[dict]:
+    """Check if lead is duplicate and mark it"""
+    query_conditions = []
+    
+    # Check phone numbers
+    for field in ['phone', 'phone2', 'whatsapp']:
+        if lead_data.get(field):
+            cleaned = clean_phone(lead_data[field])
+            if cleaned:
+                query_conditions.append({"phone": {"$regex": cleaned}})
+                query_conditions.append({"phone2": {"$regex": cleaned}})
+                query_conditions.append({"whatsapp": {"$regex": cleaned}})
+    
+    # Check instagram
+    if lead_data.get('instagram'):
+        cleaned = clean_instagram(lead_data['instagram'])
+        if cleaned:
+            query_conditions.append({"instagram": {"$regex": f"^@?{cleaned}$", "$options": "i"}})
+    
+    # Check company name + city
+    if lead_data.get('companyName') and lead_data.get('city'):
+        company_clean = re.sub(r'\s+', '', lead_data['companyName'].lower())
+        city_clean = re.sub(r'\s+', '', lead_data['city'].lower())
+        query_conditions.append({
+            "$and": [
+                {"companyName": {"$regex": company_clean, "$options": "i"}},
+                {"city": {"$regex": city_clean, "$options": "i"}}
+            ]
+        })
+    
+    if not query_conditions:
+        return None
+    
+    query = {"$or": query_conditions}
+    if exclude_id:
+        query["_id"] = {"$ne": ObjectId(exclude_id)}
+    
+    existing = await db.leads.find_one(query)
+    if existing:
+        lead_data["isDuplicate"] = True
+        lead_data["duplicateOf"] = str(existing["_id"])
+        return serialize_doc(existing)
+    
+    return None
+
+@api_router.post("/leads/detect-duplicates")
+async def detect_duplicates(request: Request):
+    """Detect and mark all duplicates in database"""
+    await require_admin(request)
+    
+    # Reset all duplicate flags first
+    await db.leads.update_many({}, {"$set": {"isDuplicate": False, "duplicateOf": None}})
+    
+    leads = await db.leads.find({}, {"_id": 1, "phone": 1, "phone2": 1, "whatsapp": 1, "instagram": 1, "companyName": 1, "city": 1}).to_list(None)
+    
+    phone_map = {}
+    instagram_map = {}
+    company_city_map = {}
+    duplicates_found = 0
+    
+    for lead in leads:
+        lead_id = str(lead["_id"])
+        duplicate_of = None
+        
+        # Check phones
+        for field in ['phone', 'phone2', 'whatsapp']:
+            if lead.get(field):
+                cleaned = clean_phone(lead[field])
+                if cleaned:
+                    if cleaned in phone_map:
+                        duplicate_of = phone_map[cleaned]
+                        break
+                    phone_map[cleaned] = lead_id
+        
+        # Check instagram
+        if not duplicate_of and lead.get('instagram'):
+            cleaned = clean_instagram(lead['instagram'])
+            if cleaned:
+                if cleaned in instagram_map:
+                    duplicate_of = instagram_map[cleaned]
+                else:
+                    instagram_map[cleaned] = lead_id
+        
+        # Check company+city
+        if not duplicate_of and lead.get('companyName') and lead.get('city'):
+            key = f"{re.sub(r's+', '', lead['companyName'].lower())}_{re.sub(r's+', '', lead['city'].lower())}"
+            if key in company_city_map:
+                duplicate_of = company_city_map[key]
+            else:
+                company_city_map[key] = lead_id
+        
+        if duplicate_of and duplicate_of != lead_id:
+            await db.leads.update_one(
+                {"_id": lead["_id"]},
+                {"$set": {"isDuplicate": True, "duplicateOf": duplicate_of}}
+            )
+            duplicates_found += 1
+    
+    return {"message": f"Found and marked {duplicates_found} duplicates"}
+
+@api_router.post("/leads/{lead_id}/dismiss-duplicate")
+async def dismiss_duplicate(lead_id: str, request: Request):
+    """Dismiss duplicate flag"""
+    await get_current_user(request)
+    
+    await db.leads.update_one(
+        {"_id": ObjectId(lead_id)},
+        {"$set": {"duplicateDismissed": True}}
+    )
+    return {"message": "Duplicate dismissed"}
+
+@api_router.get("/leads/{lead_id}/duplicates")
+async def get_lead_duplicates(lead_id: str, request: Request):
+    """Get all duplicates of a lead"""
+    await get_current_user(request)
+    
+    lead = await db.leads.find_one({"_id": ObjectId(lead_id)})
+    if not lead:
+        raise HTTPException(status_code=404, detail="Lead not found")
+    
+    # Find all leads with same duplicateOf or that are duplicateOf this lead
+    duplicate_ids = [lead_id]
+    if lead.get("duplicateOf"):
+        duplicate_ids.append(lead["duplicateOf"])
+    
+    duplicates = await db.leads.find({
+        "$or": [
+            {"_id": {"$in": [ObjectId(id) for id in duplicate_ids]}},
+            {"duplicateOf": {"$in": duplicate_ids}}
+        ]
+    }).to_list(None)
+    
+    return [serialize_doc(d) for d in duplicates]
+
+# ============== IMPORT LEADS ==============
+
+@api_router.post("/leads/import")
+async def import_leads(request: Request, file: UploadFile = File(...)):
+    """Import leads from CSV or Excel file"""
+    user = await get_current_user(request)
+    
+    # Read file
+    content = await file.read()
+    
+    try:
+        if file.filename.endswith('.xlsx') or file.filename.endswith('.xls'):
+            df = pd.read_excel(io.BytesIO(content))
+        else:
+            # Try different encodings for CSV
+            for encoding in ['utf-8', 'latin-1', 'cp1252']:
+                try:
+                    df = pd.read_csv(io.BytesIO(content), encoding=encoding)
+                    break
+                except Exception:
+                    continue
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to read file: {str(e)}")
+    
+    # Map columns
+    column_mapping = {}
+    for col in df.columns:
+        mapped = map_column_name(str(col))
+        if mapped:
+            column_mapping[col] = mapped
+    
+    # Process rows
+    imported = 0
+    duplicates_skipped = 0
+    errors = []
+    
+    for idx, row in df.iterrows():
+        try:
+            lead_data = {
+                "dateAdded": datetime.now(timezone.utc).isoformat(),
+                "responseHistory": [],
+                "callCount": 0,
+                "isDuplicate": False,
+                "duplicateDismissed": False,
+                "status": "active"
+            }
+            
+            responses = []
+            
+            for orig_col, mapped_field in column_mapping.items():
+                value = row.get(orig_col)
+                if pd.isna(value):
+                    continue
+                
+                value = str(value).strip()
+                
+                if mapped_field == 'category':
+                    lead_data['category'] = fuzzy_category(value)
+                elif mapped_field == 'priority':
+                    lead_data['priority'] = fuzzy_priority(value)
+                elif mapped_field == 'pipelineStage':
+                    lead_data['pipelineStage'] = fuzzy_pipeline_stage(value)
+                elif mapped_field in ['nextFollowupDate', 'lastContactDate']:
+                    lead_data[mapped_field] = parse_date(value)
+                elif mapped_field in ['phone', 'phone2', 'whatsapp', 'whatsapp2']:
+                    lead_data[mapped_field] = clean_phone(value)
+                elif mapped_field == 'instagram':
+                    lead_data[mapped_field] = clean_instagram(value) or value
+                elif mapped_field in ['portfolioSent', 'priceListSent']:
+                    lead_data[mapped_field] = str(value).lower() in ['yes', 'true', '1', 'sent']
+                elif mapped_field in ['response1', 'response2', 'response3']:
+                    if value:
+                        responses.append(value)
+                else:
+                    lead_data[mapped_field] = value
+            
+            # Set defaults
+            if 'category' not in lead_data or not lead_data['category']:
+                lead_data['category'] = 'Needs Review'
+            if 'priority' not in lead_data or not lead_data['priority']:
+                lead_data['priority'] = 'Low'
+            if 'pipelineStage' not in lead_data or not lead_data['pipelineStage']:
+                lead_data['pipelineStage'] = 'New Contact'
+            
+            # Skip if no company name
+            if not lead_data.get('companyName'):
+                errors.append({"row": idx + 2, "reason": "Missing company name"})
+                continue
+            
+            # Calculate ranks
+            lead_data = calculate_ranks(lead_data)
+            
+            # Add responses to history
+            for resp in responses:
+                lead_data['responseHistory'].append({
+                    "response": resp,
+                    "timestamp": lead_data['dateAdded'],
+                    "teamMember": user["id"],
+                    "teamMemberName": user.get("name", "Import")
+                })
+                lead_data['callCount'] += 1
+            
+            # Calculate most common response
+            if lead_data['responseHistory']:
+                most_common, rank = calculate_most_common_response(lead_data['responseHistory'])
+                lead_data['mostCommonResponse'] = most_common
+                lead_data['mostCommonResponseRank'] = rank
+            
+            # Check for duplicate
+            existing = await check_and_mark_duplicate(lead_data)
+            if existing and not lead_data.get('duplicateDismissed'):
+                duplicates_skipped += 1
+                # Mark existing lead
+                await db.leads.update_one(
+                    {"_id": ObjectId(existing["id"])},
+                    {"$set": {"duplicateImportAttempted": True}}
+                )
+                continue
+            
+            # Insert lead
+            await db.leads.insert_one(lead_data)
+            imported += 1
+            
+        except Exception as e:
+            errors.append({"row": idx + 2, "reason": str(e)})
+    
+    return {
+        "imported": imported,
+        "duplicatesSkipped": duplicates_skipped,
+        "errors": errors[:50],  # Limit errors returned
+        "totalErrors": len(errors),
+        "columnMapping": column_mapping
+    }
+
+@api_router.post("/leads/import/preview")
+async def preview_import(request: Request, file: UploadFile = File(...)):
+    """Preview first 10 rows of import file"""
+    await get_current_user(request)
+    
+    content = await file.read()
+    
+    try:
+        if file.filename.endswith('.xlsx') or file.filename.endswith('.xls'):
+            df = pd.read_excel(io.BytesIO(content), nrows=10)
+        else:
+            for encoding in ['utf-8', 'latin-1', 'cp1252']:
+                try:
+                    df = pd.read_csv(io.BytesIO(content), encoding=encoding, nrows=10)
+                    break
+                except Exception:
+                    continue
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to read file: {str(e)}")
+    
+    # Map columns
+    column_mapping = {}
+    unmapped = []
+    for col in df.columns:
+        mapped = map_column_name(str(col))
+        if mapped:
+            column_mapping[str(col)] = mapped
+        else:
+            unmapped.append(str(col))
+    
+    # Get total row count
+    await file.seek(0)
+    content = await file.read()
+    if file.filename.endswith('.xlsx') or file.filename.endswith('.xls'):
+        full_df = pd.read_excel(io.BytesIO(content))
+    else:
+        for encoding in ['utf-8', 'latin-1', 'cp1252']:
+            try:
+                full_df = pd.read_csv(io.BytesIO(content), encoding=encoding)
+                break
+            except Exception:
+                continue
+    
+    return {
+        "columns": list(df.columns),
+        "columnMapping": column_mapping,
+        "unmappedColumns": unmapped,
+        "preview": df.fillna("").to_dict(orient="records"),
+        "totalRows": len(full_df)
+    }
 
 # ============== DASHBOARD STATS ==============
 
@@ -600,10 +1283,17 @@ async def get_dashboard_stats(request: Request):
         "pipelineStats": pipeline_stats,
         "categoryStats": category_stats,
         "priorityStats": priority_stats,
-        "teamMembers": await db.users.count_documents({})
+        "teamMembers": await db.users.count_documents({}),
+        "duplicates": await db.leads.count_documents({**base_query, "isDuplicate": True, "duplicateDismissed": {"$ne": True}})
     }
     
     return stats
+
+@api_router.get("/responses")
+async def get_response_options(request: Request):
+    """Get all available response options"""
+    await get_current_user(request)
+    return ALL_RESPONSES
 
 # ============== STARTUP ==============
 
@@ -616,7 +1306,12 @@ async def startup_db():
     await db.leads.create_index("pipelineStage")
     await db.leads.create_index("assignedTo")
     await db.leads.create_index("nextFollowupDate")
+    await db.leads.create_index("city")
+    await db.leads.create_index("phone")
+    await db.leads.create_index("instagram")
+    await db.leads.create_index("isDuplicate")
     await db.leads.create_index([("categoryRank", 1), ("priorityRank", 1)])
+    await db.leads.create_index([("companyName", "text"), ("city", "text")])
     
     # Seed admin
     admin_email = os.environ.get("ADMIN_EMAIL", "admin@wedus.com").lower()
@@ -633,12 +1328,6 @@ async def startup_db():
             "created_at": datetime.now(timezone.utc)
         })
         logger.info(f"Admin user created: {admin_email}")
-    elif not verify_password(admin_password, existing_admin["password_hash"]):
-        await db.users.update_one(
-            {"email": admin_email},
-            {"$set": {"password_hash": hash_password(admin_password)}}
-        )
-        logger.info(f"Admin password updated")
     
     # Seed sample team members
     sample_team = [
@@ -673,11 +1362,6 @@ async def startup_db():
             f.write(f"- Email: {member['email']}\n")
             f.write("- Password: team123\n")
             f.write("- Role: team_member\n\n")
-        f.write("## Auth Endpoints\n")
-        f.write("- POST /api/auth/login\n")
-        f.write("- POST /api/auth/logout\n")
-        f.write("- GET /api/auth/me\n")
-        f.write("- POST /api/auth/refresh\n")
     
     logger.info("Database initialized successfully")
 

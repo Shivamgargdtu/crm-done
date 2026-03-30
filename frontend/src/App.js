@@ -5,6 +5,7 @@ import Layout from "./components/Layout";
 import Login from "./pages/Login";
 import Dashboard from "./pages/Dashboard";
 import AllLeads from "./pages/AllLeads";
+import LeadOverview from "./pages/LeadOverview";
 import Team from "./pages/Team";
 import PlaceholderPage from "./pages/PlaceholderPage";
 import { Toaster } from "./components/ui/sonner";
@@ -61,6 +62,7 @@ function AppRoutes() {
                 <Route path="tomorrow" element={<PlaceholderPage title="Tomorrow's Follow-ups" description="View and manage leads scheduled for follow-up tomorrow." />} />
                 <Route path="this-week" element={<PlaceholderPage title="This Week" description="View all leads scheduled for follow-up this week." />} />
                 <Route path="leads" element={<AllLeads />} />
+                <Route path="leads/:id" element={<LeadOverview />} />
                 <Route path="pipeline" element={<PlaceholderPage title="Pipeline" description="Visual pipeline view of all leads across stages." />} />
                 
                 {/* Category Routes */}
