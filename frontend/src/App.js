@@ -1,54 +1,104 @@
-import { useEffect } from "react";
 import "@/App.css";
-import { BrowserRouter, Routes, Route } from "react-router-dom";
-import axios from "axios";
+import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import { AuthProvider, useAuth } from "./contexts/AuthContext";
+import Layout from "./components/Layout";
+import Login from "./pages/Login";
+import Dashboard from "./pages/Dashboard";
+import AllLeads from "./pages/AllLeads";
+import Team from "./pages/Team";
+import PlaceholderPage from "./pages/PlaceholderPage";
+import { Toaster } from "./components/ui/sonner";
 
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
-const API = `${BACKEND_URL}/api`;
+// Protected Route wrapper
+const ProtectedRoute = ({ children }) => {
+    const { user, loading } = useAuth();
 
-const Home = () => {
-  const helloWorldApi = async () => {
-    try {
-      const response = await axios.get(`${API}/`);
-      console.log(response.data.message);
-    } catch (e) {
-      console.error(e, `errored out requesting / api`);
+    if (loading) {
+        return (
+            <div className="min-h-screen bg-[#FFF5F5] flex items-center justify-center">
+                <div className="w-8 h-8 border-2 border-[#E8536A] border-t-transparent rounded-full animate-spin" />
+            </div>
+        );
     }
-  };
 
-  useEffect(() => {
-    helloWorldApi();
-  }, []);
+    if (!user) {
+        return <Navigate to="/login" replace />;
+    }
 
-  return (
-    <div>
-      <header className="App-header">
-        <a
-          className="App-link"
-          href="https://emergent.sh"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <img src="https://avatars.githubusercontent.com/in/1201222?s=120&u=2686cf91179bbafbc7a71bfbc43004cf9ae1acea&v=4" />
-        </a>
-        <p className="mt-5">Building something incredible ~!</p>
-      </header>
-    </div>
-  );
+    return children;
 };
 
-function App() {
-  return (
-    <div className="App">
-      <BrowserRouter>
+// Public Route wrapper (redirect if logged in)
+const PublicRoute = ({ children }) => {
+    const { user, loading } = useAuth();
+
+    if (loading) {
+        return (
+            <div className="min-h-screen bg-[#FFF5F5] flex items-center justify-center">
+                <div className="w-8 h-8 border-2 border-[#E8536A] border-t-transparent rounded-full animate-spin" />
+            </div>
+        );
+    }
+
+    if (user) {
+        return <Navigate to="/dashboard" replace />;
+    }
+
+    return children;
+};
+
+function AppRoutes() {
+    return (
         <Routes>
-          <Route path="/" element={<Home />}>
-            <Route index element={<Home />} />
-          </Route>
+            {/* Public Routes */}
+            <Route path="/login" element={<PublicRoute><Login /></PublicRoute>} />
+
+            {/* Protected Routes */}
+            <Route path="/" element={<ProtectedRoute><Layout /></ProtectedRoute>}>
+                <Route index element={<Navigate to="/dashboard" replace />} />
+                <Route path="dashboard" element={<Dashboard />} />
+                <Route path="today" element={<PlaceholderPage title="Today's Follow-ups" description="View and manage leads scheduled for follow-up today." />} />
+                <Route path="tomorrow" element={<PlaceholderPage title="Tomorrow's Follow-ups" description="View and manage leads scheduled for follow-up tomorrow." />} />
+                <Route path="this-week" element={<PlaceholderPage title="This Week" description="View all leads scheduled for follow-up this week." />} />
+                <Route path="leads" element={<AllLeads />} />
+                <Route path="pipeline" element={<PlaceholderPage title="Pipeline" description="Visual pipeline view of all leads across stages." />} />
+                
+                {/* Category Routes */}
+                <Route path="category/meeting-done" element={<PlaceholderPage title="Meeting Done" description="Leads where meetings have been completed." />} />
+                <Route path="category/interested" element={<PlaceholderPage title="Interested" description="Leads who have shown interest." />} />
+                <Route path="category/call-back" element={<PlaceholderPage title="Call Back" description="Leads who requested a callback." />} />
+                <Route path="category/busy" element={<PlaceholderPage title="Busy" description="Leads who were busy during contact." />} />
+                <Route path="category/no-response" element={<PlaceholderPage title="No Response" description="Leads who haven't responded." />} />
+                <Route path="category/foreign" element={<PlaceholderPage title="Foreign" description="International leads." />} />
+                <Route path="category/future-projection" element={<PlaceholderPage title="Future Projection" description="Leads for future follow-up." />} />
+                <Route path="category/needs-review" element={<PlaceholderPage title="Needs Review" description="Leads that need review." />} />
+                <Route path="category/not-interested" element={<PlaceholderPage title="Not Interested" description="Leads who are not interested." />} />
+                
+                {/* Other Routes */}
+                <Route path="instagram" element={<PlaceholderPage title="Instagram Leads" description="Leads sourced from Instagram." />} />
+                <Route path="whatsapp" element={<PlaceholderPage title="WhatsApp Leads" description="Leads with WhatsApp contacts." />} />
+                <Route path="calendar" element={<PlaceholderPage title="Meetings Calendar" description="Calendar view of all scheduled meetings." />} />
+                <Route path="reminders" element={<PlaceholderPage title="Reminders" description="View and manage your reminders." />} />
+                <Route path="weekly-messages" element={<PlaceholderPage title="Weekly Messages" description="Weekly message templates and logs." />} />
+                <Route path="team" element={<Team />} />
+                <Route path="settings" element={<PlaceholderPage title="Settings" description="Manage your account and app settings." />} />
+            </Route>
+
+            {/* Catch all */}
+            <Route path="*" element={<Navigate to="/dashboard" replace />} />
         </Routes>
-      </BrowserRouter>
-    </div>
-  );
+    );
+}
+
+function App() {
+    return (
+        <BrowserRouter>
+            <AuthProvider>
+                <AppRoutes />
+                <Toaster position="top-right" />
+            </AuthProvider>
+        </BrowserRouter>
+    );
 }
 
 export default App;

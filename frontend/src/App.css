@@ -1,34 +1,82 @@
-.App-logo {
-    height: 40vmin;
-    pointer-events: none;
-}
+/* Wed Us CRM Styles */
 
-@media (prefers-reduced-motion: no-preference) {
-    .App-logo {
-        animation: App-logo-spin infinite 20s linear;
-    }
-}
-
-.App-header {
-    background-color: #0f0f10;
+.page-container {
     min-height: 100vh;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    font-size: calc(10px + 2vmin);
-    color: white;
+    background-color: #FFF5F5;
 }
 
-.App-link {
-    color: #61dafb;
+.card-shadow {
+    box-shadow: 0 2px 12px rgba(232, 83, 106, 0.06);
 }
 
-@keyframes App-logo-spin {
+.card-shadow-hover:hover {
+    box-shadow: 0 8px 24px rgba(232, 83, 106, 0.12);
+}
+
+/* Animation utilities */
+.animate-fade-in {
+    animation: fadeIn 0.3s ease-in-out;
+}
+
+@keyframes fadeIn {
     from {
-        transform: rotate(0deg);
+        opacity: 0;
+        transform: translateY(4px);
     }
     to {
-        transform: rotate(360deg);
+        opacity: 1;
+        transform: translateY(0);
     }
+}
+
+/* Sidebar active state */
+.sidebar-link-active {
+    background-color: #FFF5F5;
+    color: #E8536A;
+}
+
+/* Category badges */
+.badge-meeting-done {
+    background-color: #D1FAE5;
+    color: #065F46;
+}
+
+.badge-interested {
+    background-color: #DBEAFE;
+    color: #1E40AF;
+}
+
+.badge-call-back {
+    background-color: #FEF3C7;
+    color: #92400E;
+}
+
+.badge-busy {
+    background-color: #FEE2E2;
+    color: #991B1B;
+}
+
+.badge-no-response {
+    background-color: #F3F4F6;
+    color: #374151;
+}
+
+.badge-foreign {
+    background-color: #EDE9FE;
+    color: #5B21B6;
+}
+
+.badge-future-projection {
+    background-color: #CCFBF1;
+    color: #115E59;
+}
+
+.badge-needs-review {
+    background-color: #FFEDD5;
+    color: #9A3412;
+}
+
+.badge-not-interested {
+    background-color: #E5E7EB;
+    color: #1F2937;
 }
