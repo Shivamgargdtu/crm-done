@@ -470,6 +470,97 @@ async def refresh_token(request: Request, response: Response):
     except jwt.InvalidTokenError:
         raise HTTPException(status_code=401, detail="Invalid refresh token")
 
+# ============== PROFILE / SETTINGS ROUTES ==============
+
+class ProfileUpdate(BaseModel):
+    name: Optional[str] = None
+    email: Optional[EmailStr] = None
+    color: Optional[str] = None
+
+class PasswordChange(BaseModel):
+    currentPassword: str
+    newPassword: str
+
+class AppSettings(BaseModel):
+    duplicateDetectionEnabled: Optional[bool] = None
+
+@api_router.put("/auth/profile")
+async def update_profile(body: ProfileUpdate, request: Request, response: Response):
+    """Update current user's profile (name, email, color)."""
+    user = await get_current_user(request)
+    user_id = user["id"]
+    update = {}
+
+    if body.name is not None and body.name.strip():
+        update["name"] = body.name.strip()
+
+    if body.color is not None:
+        update["color"] = body.color
+
+    if body.email is not None:
+        new_email = body.email.lower().strip()
+        if new_email != user.get("email"):
+            existing = await db.users.find_one({"email": new_email})
+            if existing:
+                raise HTTPException(status_code=400, detail="Email already in use")
+            update["email"] = new_email
+
+    if not update:
+        raise HTTPException(status_code=400, detail="No changes provided")
+
+    await db.users.update_one({"_id": ObjectId(user_id)}, {"$set": update})
+
+    # If email changed, re-issue tokens with new email
+    updated_user = await db.users.find_one({"_id": ObjectId(user_id)})
+    new_access = create_access_token(user_id, updated_user["email"], updated_user["role"])
+    response.set_cookie(key="access_token", value=new_access, httponly=True, secure=False, samesite="lax", max_age=900, path="/")
+
+    result = serialize_doc(updated_user)
+    result.pop("password_hash", None)
+    return result
+
+@api_router.put("/auth/password")
+async def change_password(body: PasswordChange, request: Request):
+    """Change current user's password."""
+    user = await get_current_user(request)
+    user_id = user["id"]
+
+    full_user = await db.users.find_one({"_id": ObjectId(user_id)})
+    if not verify_password(body.currentPassword, full_user["password_hash"]):
+        raise HTTPException(status_code=400, detail="Current password is incorrect")
+
+    if len(body.newPassword) < 6:
+        raise HTTPException(status_code=400, detail="New password must be at least 6 characters")
+
+    new_hash = hash_password(body.newPassword)
+    await db.users.update_one({"_id": ObjectId(user_id)}, {"$set": {"password_hash": new_hash}})
+    return {"message": "Password changed successfully"}
+
+@api_router.get("/settings")
+async def get_app_settings(request: Request):
+    """Get global app settings."""
+    await get_current_user(request)
+    settings = await db.settings.find_one({"_id": "app_settings"})
+    if not settings:
+        return {"duplicateDetectionEnabled": True}
+    return {"duplicateDetectionEnabled": settings.get("duplicateDetectionEnabled", True)}
+
+@api_router.put("/settings")
+async def update_app_settings(body: AppSettings, request: Request):
+    """Update global app settings (admin only)."""
+    await require_admin(request)
+    update = {}
+    if body.duplicateDetectionEnabled is not None:
+        update["duplicateDetectionEnabled"] = body.duplicateDetectionEnabled
+    if not update:
+        raise HTTPException(status_code=400, detail="No changes provided")
+    await db.settings.update_one(
+        {"_id": "app_settings"},
+        {"$set": update},
+        upsert=True
+    )
+    return {**update, "message": "Settings updated"}
+
 # ============== TEAM ROUTES ==============
 
 @api_router.get("/team")
@@ -925,7 +1016,12 @@ async def bulk_action(action: BulkAction, request: Request):
 # ============== DUPLICATE DETECTION ==============
 
 async def check_and_mark_duplicate(lead_data: dict, exclude_id: str = None) -> Optional[dict]:
-    """Check if lead is duplicate and mark it"""
+    """Check if lead is duplicate and mark it. Respects global setting."""
+    # Check if duplicate detection is enabled
+    settings = await db.settings.find_one({"_id": "app_settings"})
+    if settings and not settings.get("duplicateDetectionEnabled", True):
+        return None
+
     query_conditions = []
     
     # Check phone numbers

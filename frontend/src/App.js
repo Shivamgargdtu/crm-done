@@ -12,6 +12,7 @@ import Tomorrow from "./pages/Tomorrow";
 import ThisWeek from "./pages/ThisWeek";
 import CategoryPage from "./pages/CategoryPage";
 import Team from "./pages/Team";
+import Settings from "./pages/Settings";
 import PlaceholderPage from "./pages/PlaceholderPage";
 import { Toaster } from "./components/ui/sonner";
 
@@ -88,7 +89,7 @@ function AppRoutes() {
                 <Route path="reminders" element={<PlaceholderPage title="Reminders" description="View and manage your reminders." />} />
                 <Route path="weekly-messages" element={<PlaceholderPage title="Weekly Messages" description="Weekly message templates and logs." />} />
                 <Route path="team" element={<Team />} />
-                <Route path="settings" element={<PlaceholderPage title="Settings" description="Manage your account and app settings." />} />
+                <Route path="settings" element={<Settings />} />
             </Route>
 
             {/* Catch all */}
