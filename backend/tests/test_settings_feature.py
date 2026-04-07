@@ -10,11 +10,11 @@ BASE_URL = os.environ.get('REACT_APP_BACKEND_URL', '').rstrip('/')
 if not BASE_URL:
     BASE_URL = "https://nuptial-pipeline.preview.emergentagent.com"
 
-# Test credentials from test_credentials.md
-ADMIN_EMAIL = "admin@wedus.com"
-ADMIN_PASSWORD = "admin123"
-TEAM_EMAIL = "priya@wedus.com"
-TEAM_PASSWORD = "team123"
+# Test credentials from environment
+ADMIN_EMAIL = os.environ.get("TEST_ADMIN_EMAIL", "admin@wedus.com")
+ADMIN_PASSWORD = os.environ.get("TEST_ADMIN_PASSWORD", "admin123")
+TEAM_EMAIL = os.environ.get("TEST_TEAM_EMAIL", "priya@wedus.com")
+TEAM_PASSWORD = os.environ.get("TEST_TEAM_PASSWORD", "team123")
 
 
 class TestAuthProfile:

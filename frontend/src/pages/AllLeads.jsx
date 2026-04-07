@@ -2,11 +2,10 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useOutletContext, useNavigate, Link } from 'react-router-dom';
 import axios from 'axios';
 import { 
-    Search, Filter, ChevronDown, ChevronUp, Phone, Mail, MapPin, 
-    Download, Upload, Plus, Trash2, Users, X, Check, Edit2,
-    ArrowUpDown, AlertTriangle, PhoneCall, ExternalLink
+    ChevronDown, ChevronUp, Phone,
+    Download, Upload, Plus, Trash2, Users, Check, Edit2,
+    ArrowUpDown, PhoneCall
 } from 'lucide-react';
-import { Input } from '../components/ui/input';
 import { Button } from '../components/ui/button';
 import { Checkbox } from '../components/ui/checkbox';
 import {
@@ -28,6 +27,8 @@ import { Badge } from '../components/ui/badge';
 import CallLogPanel from '../components/CallLogPanel';
 import ImportModal from '../components/ImportModal';
 import AddLeadModal from '../components/AddLeadModal';
+
+import { LeadFilterBar } from '../components/LeadFilterBar';
 
 const API_URL = process.env.REACT_APP_API_URL;
 
@@ -378,109 +379,28 @@ export default function AllLeads() {
 
             {/* Filter Bar */}
             <div className="bg-white rounded-[12px] shadow-sm border border-gray-100 p-3">
-                <div className="flex items-center gap-2 flex-wrap">
-                    <div className="relative flex-1 min-w-[180px] max-w-[240px]">
-                        <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400" />
-                        <Input
-                            value={search}
-                            onChange={(e) => handleSearchChange(e.target.value)}
-                            placeholder="Search company, name, phone, city..."
-                            className="pl-8 h-8 text-[11px] rounded-[8px]"
-                            data-testid="search-leads-input"
-                        />
-                    </div>
-
-                    <Select value={categoryFilter || undefined} onValueChange={(v) => setCategoryFilter(v === '_all_' ? '' : v)}>
-                        <SelectTrigger className="w-[130px] h-8 text-[11px] rounded-[8px]" data-testid="category-filter">
-                            <SelectValue placeholder="Category" />
-                        </SelectTrigger>
-                        <SelectContent>
-                            <SelectItem value="_all_">All Categories</SelectItem>
-                            {CATEGORIES.map(cat => (
-                                <SelectItem key={cat} value={cat}>{cat}</SelectItem>
-                            ))}
-                        </SelectContent>
-                    </Select>
-
-                    <Select value={priorityFilter || undefined} onValueChange={(v) => setPriorityFilter(v === '_all_' ? '' : v)}>
-                        <SelectTrigger className="w-[100px] h-8 text-[11px] rounded-[8px]" data-testid="priority-filter">
-                            <SelectValue placeholder="Priority" />
-                        </SelectTrigger>
-                        <SelectContent>
-                            <SelectItem value="_all_">All</SelectItem>
-                            {PRIORITIES.map(p => (
-                                <SelectItem key={p} value={p}>{p}</SelectItem>
-                            ))}
-                        </SelectContent>
-                    </Select>
-
-                    <Select value={assignedToFilter || undefined} onValueChange={(v) => setAssignedToFilter(v === '_all_' ? '' : v)}>
-                        <SelectTrigger className="w-[120px] h-8 text-[11px] rounded-[8px]" data-testid="assigned-filter">
-                            <SelectValue placeholder="Assigned To" />
-                        </SelectTrigger>
-                        <SelectContent>
-                            <SelectItem value="_all_">All</SelectItem>
-                            {teamMembers.map(m => (
-                                <SelectItem key={m.id} value={m.id}>{m.name}</SelectItem>
-                            ))}
-                        </SelectContent>
-                    </Select>
-
-                    <Select value={cityFilter || undefined} onValueChange={(v) => setCityFilter(v === '_all_' ? '' : v)}>
-                        <SelectTrigger className="w-[100px] h-8 text-[11px] rounded-[8px]">
-                            <SelectValue placeholder="City" />
-                        </SelectTrigger>
-                        <SelectContent>
-                            <SelectItem value="_all_">All Cities</SelectItem>
-                            {cities.map(c => (
-                                <SelectItem key={c} value={c}>{c}</SelectItem>
-                            ))}
-                        </SelectContent>
-                    </Select>
-
-                    <Select value={portfolioSentFilter || undefined} onValueChange={(v) => setPortfolioSentFilter(v === '_all_' ? '' : v)}>
-                        <SelectTrigger className="w-[110px] h-8 text-[11px] rounded-[8px]">
-                            <SelectValue placeholder="Portfolio" />
-                        </SelectTrigger>
-                        <SelectContent>
-                            <SelectItem value="_all_">All</SelectItem>
-                            <SelectItem value="yes">Sent</SelectItem>
-                            <SelectItem value="no">Not Sent</SelectItem>
-                        </SelectContent>
-                    </Select>
-
-                    <label className="flex items-center gap-1.5 text-[11px] text-gray-600 cursor-pointer">
-                        <Checkbox
-                            checked={showDuplicatesOnly}
-                            onCheckedChange={setShowDuplicatesOnly}
-                            className="h-4 w-4"
-                        />
-                        Duplicates
-                    </label>
-
-                    <Select value={chattingViaFilter || 'all'} onValueChange={v => { setChattingViaFilter(v === 'all' ? '' : v); setPage(0); }}>
-                        <SelectTrigger className="w-[120px] h-8 text-[11px] rounded-[8px]" data-testid="filter-chatting-via">
-                            <SelectValue placeholder="Chatting Via" />
-                        </SelectTrigger>
-                        <SelectContent>
-                            <SelectItem value="all">All Numbers</SelectItem>
-                            <SelectItem value="5235">...5235</SelectItem>
-                            <SelectItem value="5533">...5533</SelectItem>
-                            <SelectItem value="0951">...0951</SelectItem>
-                        </SelectContent>
-                    </Select>
-
-                    {hasFilters && (
-                        <Button
-                            onClick={clearFilters}
-                            variant="ghost"
-                            className="h-8 text-[11px] text-[#E8536A] hover:text-[#D43D54]"
-                        >
-                            <X size={12} className="mr-1" />
-                            Clear
-                        </Button>
-                    )}
-                </div>
+                <LeadFilterBar
+                    search={search}
+                    onSearchChange={handleSearchChange}
+                    categoryFilter={categoryFilter}
+                    onCategoryChange={setCategoryFilter}
+                    priorityFilter={priorityFilter}
+                    onPriorityChange={setPriorityFilter}
+                    assignedToFilter={assignedToFilter}
+                    onAssignedToChange={setAssignedToFilter}
+                    cityFilter={cityFilter}
+                    onCityChange={setCityFilter}
+                    portfolioSentFilter={portfolioSentFilter}
+                    onPortfolioSentChange={setPortfolioSentFilter}
+                    showDuplicatesOnly={showDuplicatesOnly}
+                    onDuplicatesChange={setShowDuplicatesOnly}
+                    chattingViaFilter={chattingViaFilter}
+                    onChattingViaChange={(v) => { setChattingViaFilter(v); setPage(0); }}
+                    hasFilters={hasFilters}
+                    onClearFilters={clearFilters}
+                    teamMembers={teamMembers}
+                    cities={cities}
+                />
 
                 {/* Bulk Actions */}
                 {selectedIds.size > 0 && (

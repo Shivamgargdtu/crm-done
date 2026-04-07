@@ -1515,6 +1515,8 @@ async def preview_import(request: Request, file: UploadFile = File(...)):
     await get_current_user(request)
     content = await file.read()
 
+    df_preview = None
+    full_df = None
     try:
         df_preview = read_file_to_df(content, file.filename, nrows=10)
         full_df = read_file_to_df(content, file.filename)

@@ -290,7 +290,7 @@ export default function CallLogPanel({ lead, onClose, onUpdate, teamMembers }) {
                                     : 'Unknown';
                                 
                                 return (
-                                    <div key={idx} className="bg-white border border-gray-100 rounded-[10px] p-3 space-y-2">
+                                    <div key={`${entry.timestamp}-${entry.response}-${idx}`} className="bg-white border border-gray-100 rounded-[10px] p-3 space-y-2">
                                         <div className="flex items-center justify-between">
                                             <span className={`inline-block px-2 py-0.5 rounded text-[10px] font-medium ${getResponseColor(entry.response)}`}>
                                                 {entry.response}

@@ -19,7 +19,7 @@ class TestChattingViaFeature:
         self.session = requests.Session()
         login_response = self.session.post(
             f"{BASE_URL}/api/auth/login",
-            json={"email": "admin@wedus.com", "password": "admin123"}
+            json={"email": os.environ.get("TEST_ADMIN_EMAIL", "admin@wedus.com"), "password": os.environ.get("TEST_ADMIN_PASSWORD", "admin123")}
         )
         if login_response.status_code != 200:
             pytest.skip("Could not login as admin")

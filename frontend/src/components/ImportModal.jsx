@@ -323,7 +323,7 @@ export default function ImportModal({ open, onClose, onSuccess }) {
                                             </thead>
                                             <tbody>
                                                 {preview.preview.map((row, idx) => (
-                                                    <tr key={idx} className="border-t border-gray-50">
+                                                    <tr key={`preview-row-${idx}`} className="border-t border-gray-50">
                                                         {preview.columns.map(col => (
                                                             <td key={col} className="px-2 py-1 text-gray-700 whitespace-nowrap max-w-[150px] truncate">{String(row[col] || '')}</td>
                                                         ))}
@@ -413,7 +413,7 @@ export default function ImportModal({ open, onClose, onSuccess }) {
                                 <div className="space-y-2 pr-2">
                                     {duplicates.map((dup, idx) => (
                                         <DuplicateRow
-                                            key={idx}
+                                            key={`dup-${dup.rowIndex}-${idx}`}
                                             dup={dup}
                                             index={idx}
                                             action={actions[idx] || 'skip'}
@@ -477,7 +477,7 @@ export default function ImportModal({ open, onClose, onSuccess }) {
                                     <ScrollArea className="h-[80px]">
                                         <ul className="text-[10px] text-red-600 space-y-1">
                                             {finalResult.errors.slice(0, 10).map((err, idx) => (
-                                                <li key={idx}>Row {err.row || err.index || '?'}: {err.reason}</li>
+                                                <li key={`err-${err.row || err.index || idx}`}>Row {err.row || err.index || '?'}: {err.reason}</li>
                                             ))}
                                         </ul>
                                     </ScrollArea>

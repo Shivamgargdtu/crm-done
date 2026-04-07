@@ -556,7 +556,7 @@ export default function LeadOverview() {
                                 {lead.responseHistory.slice(-3).reverse().map((entry, idx) => {
                                     const member = teamMembers.find(m => m.id === entry.teamMember);
                                     return (
-                                        <div key={idx} className="text-[11px] border-l-2 border-gray-200 pl-2">
+                                        <div key={`${entry.timestamp}-${entry.response}-${idx}`} className="text-[11px] border-l-2 border-gray-200 pl-2">
                                             <div className="flex items-center gap-2">
                                                 <span className="font-medium text-gray-700">{entry.response}</span>
                                                 {member && (

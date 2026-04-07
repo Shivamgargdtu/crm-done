@@ -97,7 +97,7 @@ export default function Sidebar({ counts, currentPath, user, isAdmin, onLogout, 
                 <nav className="p-2 space-y-0.5">
                     {navItems.map((item, index) => {
                         if (item.divider) {
-                            return <div key={index} className="h-px bg-gray-100 my-2" />;
+                            return <div key={`divider-${index}`} className="h-px bg-gray-100 my-2" />;
                         }
 
                         const Icon = item.icon;
