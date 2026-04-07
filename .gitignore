@@ -88,3 +88,7 @@ android-sdk/
 
 # Build cache
 frontend/node_modules/.cache/
+-e 
+# Environment files
+*.env
+*.env.*
