@@ -58,18 +58,15 @@ export const AuthProvider = ({ children }) => {
         checkAuth();
         // Set up periodic token refresh (every 50 minutes)
         const refreshInterval = setInterval(async () => {
-            if (user) {
-                try {
-                    await axios.post(`${API_URL}/api/auth/refresh`, {}, { withCredentials: true });
-                } catch (err) {
-                    // If refresh fails, check auth state
-                    checkAuth();
-                }
+            try {
+                await axios.post(`${API_URL}/api/auth/refresh`, {}, { withCredentials: true });
+            } catch (err) {
+                checkAuth();
             }
         }, 50 * 60 * 1000);
 
         return () => clearInterval(refreshInterval);
-    }, [checkAuth, user]);
+    }, [checkAuth]);
 
     const login = async (email, password) => {
         try {
