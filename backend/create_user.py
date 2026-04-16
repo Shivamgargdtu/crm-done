@@ -1,18 +1,24 @@
-from app.database import SessionLocal
-from app.models import User
-from app.auth import get_password_hash
+import asyncio
+from motor.motor_asyncio import AsyncIOMotorClient
+import os
+import bcrypt
 
-db = SessionLocal()
+MONGO_URL = os.environ.get("MONGODB_URI")
+client = AsyncIOMotorClient(MONGO_URL)
+db = client["wedus_crm"]
 
-user = User(
-    email="shivamgarg612sg@gmail.com",
-    hashed_password=get_password_hash("12345678"),
-    name="Shivam",
-    role="admin"
-)
+def hash_password(password):
+    return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
 
-db.add(user)
-db.commit()
-db.close()
+async def create_user():
+    user = {
+        "email": "shivamgarg612sg@gmail.com",
+        "password_hash": hash_password("12345678"),
+        "name": "Shivam",
+        "role": "admin"
+    }
 
-print("User created successfully!")
+    await db.users.insert_one(user)
+    print("User created ✅")
+
+asyncio.run(create_user())
