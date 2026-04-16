@@ -74,7 +74,7 @@ def set_cookie(response: Response, key: str, value: str, max_age: int) -> None:
         samesite=flags["samesite"],
         max_age=max_age,
         path="/",
-    )r
+    )
 
 
 def create_access_token(user_id: str, email: str, role: str) -> str:
