@@ -122,3 +122,12 @@ watchfiles==1.1.1
 websockets==16.0
 yarl==1.23.0
 zipp==3.23.0
+fastapi
+uvicorn
+motor
+python-dotenv
+bcrypt
+pyjwt
+pandas
+openpyxl
+python-multipart

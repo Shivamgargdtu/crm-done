@@ -59,9 +59,12 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
     return bcrypt.checkpw(plain_password.encode("utf-8"), hashed_password.encode("utf-8"))
 
 # ============== COOKIE HELPERS (FIX: cross-site cookie support) ==============
-
 def _cookie_flags():
-    return {"secure": True, "samesite": "none"}
+    frontend_url = os.environ.get("FRONTEND_URL", "http://localhost:3000").rstrip("/")
+
+    if frontend_url.startswith("https://"):
+        return {"secure": True, "samesite": "none"}  # production
+    return {"secure": False, "samesite": "lax"}      # local dev
     """
     Return secure/samesite values that work for both local dev and
     cross-origin production (Vercel frontend → Railway backend).
@@ -92,12 +95,13 @@ def _cookie_flags():
 
 
 def set_cookie(response: Response, key: str, value: str, max_age: int) -> None:
+    flags = _cookie_flags()
     response.set_cookie(
         key=key,
         value=value,
         httponly=True,
-        secure=True,
-        samesite="none",
+        secure=flags["secure"],
+        samesite=flags["samesite"],
         max_age=max_age,
         path="/",
     )
