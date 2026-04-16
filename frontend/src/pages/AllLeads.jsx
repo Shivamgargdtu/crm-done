@@ -294,14 +294,30 @@ export default function AllLeads() {
 
     // Export
     const handleExport = async () => {
-        const params = new URLSearchParams();
-        if (categoryFilter) params.append('category', categoryFilter);
-        if (priorityFilter) params.append('priority', priorityFilter);
-        if (assignedToFilter) params.append('assignedTo', assignedToFilter);
-        if (cityFilter) params.append('city', cityFilter);
-        if (search) params.append('search', search);
-        
-        window.open(`${API_URL}/api/leads/export?${params.toString()}`, '_blank');
+        try {
+            const params = new URLSearchParams();
+            if (categoryFilter) params.append('category', categoryFilter);
+            if (priorityFilter) params.append('priority', priorityFilter);
+            if (assignedToFilter) params.append('assignedTo', assignedToFilter);
+            if (cityFilter) params.append('city', cityFilter);
+            if (search) params.append('search', search);
+            
+            const res = await axios.get(`${API_URL}/api/leads/export?${params.toString()}`, {
+                withCredentials: true,
+                responseType: 'blob'
+            });
+            
+            const url = window.URL.createObjectURL(new Blob([res.data]));
+            const link = document.createElement('a');
+            link.href = url;
+            link.setAttribute('download', `leads_export_${new Date().toISOString().slice(0,10)}.csv`);
+            document.body.appendChild(link);
+            link.click();
+            link.remove();
+            window.URL.revokeObjectURL(url);
+        } catch (err) {
+            console.error('Export failed:', err);
+        }
     };
 
     // Clear filters
