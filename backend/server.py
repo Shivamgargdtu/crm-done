@@ -60,7 +60,8 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
 
 # ============== COOKIE HELPERS (FIX: cross-site cookie support) ==============
 
-def _cookie_flags() -> dict:
+def _cookie_flags():
+    return {"secure": True, "samesite": "none"}
     """
     Return secure/samesite values that work for both local dev and
     cross-origin production (Vercel frontend → Railway backend).
@@ -91,13 +92,12 @@ def _cookie_flags() -> dict:
 
 
 def set_cookie(response: Response, key: str, value: str, max_age: int) -> None:
-    flags = _cookie_flags()
     response.set_cookie(
         key=key,
         value=value,
         httponly=True,
-        secure=flags["secure"],
-        samesite=flags["samesite"],
+        secure=True,
+        samesite="none",
         max_age=max_age,
         path="/",
     )
