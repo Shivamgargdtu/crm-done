@@ -61,39 +61,9 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
 # ============== COOKIE HELPERS (FIX: cross-site cookie support) ==============
 def _cookie_flags():
     frontend_url = os.environ.get("FRONTEND_URL", "http://localhost:3000").rstrip("/")
-
     if frontend_url.startswith("https://"):
-        return {"secure": True, "samesite": "none"}  # production
-    return {"secure": False, "samesite": "lax"}      # local dev
-    """
-    Return secure/samesite values that work for both local dev and
-    cross-origin production (Vercel frontend → Railway backend).
-
-    Rules:
-      - FRONTEND_URL starts with https  → production path: secure=True, samesite="none"
-      - Otherwise (localhost)           → dev path: secure=False, samesite="lax"
-    You can override either flag explicitly via env vars COOKIE_SECURE / COOKIE_SAMESITE.
-    """
-    frontend_url = os.environ.get("FRONTEND_URL", "http://localhost:3000").rstrip("/")
-
-    # Explicit overrides from env
-    samesite_override = os.environ.get("COOKIE_SAMESITE", "").strip().lower()
-    secure_override   = os.environ.get("COOKIE_SECURE",   "").strip().lower()
-
-    if samesite_override:
-        samesite = samesite_override
-    else:
-        samesite = "none" if frontend_url.startswith("https://") else "lax"
-
-    if secure_override:
-        secure = secure_override in {"1", "true", "yes", "on"}
-    else:
-        # samesite=none REQUIRES secure=True per RFC 6265bis
-        secure = samesite == "none" or frontend_url.startswith("https://")
-
-    return {"secure": secure, "samesite": samesite}
-
-
+        return {"secure": True, "samesite": "none"}
+    return {"secure": False, "samesite": "lax"}
 def set_cookie(response: Response, key: str, value: str, max_age: int) -> None:
     flags = _cookie_flags()
     response.set_cookie(
@@ -104,7 +74,7 @@ def set_cookie(response: Response, key: str, value: str, max_age: int) -> None:
         samesite=flags["samesite"],
         max_age=max_age,
         path="/",
-    )
+    )r
 
 
 def create_access_token(user_id: str, email: str, role: str) -> str:
