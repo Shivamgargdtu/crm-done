@@ -1,14 +1,18 @@
-import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
-import axios from 'axios';
+import React, { createContext, useContext, useState, useEffect, useCallback } from "react";
+import axios from "axios";
 
-const API_URL = process.env.REACT_APP_API_URL;
+const API_URL = (process.env.REACT_APP_API_URL || "http://localhost:8000").replace(/\/$/, "");
+
+// Safety net for every axios call in the app
+axios.defaults.withCredentials = true;
+axios.defaults.baseURL = API_URL;
 
 const AuthContext = createContext(null);
 
 export const useAuth = () => {
     const context = useContext(AuthContext);
     if (!context) {
-        throw new Error('useAuth must be used within an AuthProvider');
+        throw new Error("useAuth must be used within an AuthProvider");
     }
     return context;
 };
@@ -16,8 +20,12 @@ export const useAuth = () => {
 function formatApiErrorDetail(detail) {
     if (detail == null) return "Something went wrong. Please try again.";
     if (typeof detail === "string") return detail;
-    if (Array.isArray(detail))
-        return detail.map((e) => (e && typeof e.msg === "string" ? e.msg : JSON.stringify(e))).filter(Boolean).join(" ");
+    if (Array.isArray(detail)) {
+        return detail
+            .map((e) => (e && typeof e.msg === "string" ? e.msg : JSON.stringify(e)))
+            .filter(Boolean)
+            .join(" ");
+    }
     if (detail && typeof detail.msg === "string") return detail.msg;
     return String(detail);
 }
@@ -30,19 +38,18 @@ export const AuthProvider = ({ children }) => {
     const checkAuth = useCallback(async () => {
         try {
             const response = await axios.get(`${API_URL}/api/auth/me`, {
-                withCredentials: true
+                withCredentials: true,
             });
             setUser(response.data);
             return true;
         } catch (err) {
-            // Try to refresh token
             if (err.response?.status === 401) {
                 try {
                     await axios.post(`${API_URL}/api/auth/refresh`, {}, { withCredentials: true });
                     const response = await axios.get(`${API_URL}/api/auth/me`, { withCredentials: true });
                     setUser(response.data);
                     return true;
-                } catch (refreshErr) {
+                } catch {
                     setUser(null);
                     return false;
                 }
@@ -56,11 +63,11 @@ export const AuthProvider = ({ children }) => {
 
     useEffect(() => {
         checkAuth();
-        // Set up periodic token refresh (every 50 minutes)
+
         const refreshInterval = setInterval(async () => {
             try {
                 await axios.post(`${API_URL}/api/auth/refresh`, {}, { withCredentials: true });
-            } catch (err) {
+            } catch {
                 checkAuth();
             }
         }, 50 * 60 * 1000);
@@ -89,7 +96,7 @@ export const AuthProvider = ({ children }) => {
         try {
             await axios.post(`${API_URL}/api/auth/logout`, {}, { withCredentials: true });
         } catch (err) {
-            console.error('Logout error:', err);
+            console.error("Logout error:", err);
         } finally {
             setUser(null);
         }
@@ -100,7 +107,7 @@ export const AuthProvider = ({ children }) => {
             await axios.post(`${API_URL}/api/auth/refresh`, {}, { withCredentials: true });
             await checkAuth();
             return true;
-        } catch (err) {
+        } catch {
             setUser(null);
             return false;
         }
@@ -114,15 +121,11 @@ export const AuthProvider = ({ children }) => {
         logout,
         refreshToken,
         checkAuth,
-        isAdmin: user?.role === 'admin',
-        isAuthenticated: !!user
+        isAdmin: user?.role === "admin",
+        isAuthenticated: !!user,
     };
 
-    return (
-        <AuthContext.Provider value={value}>
-            {children}
-        </AuthContext.Provider>
-    );
+    return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 };
 
 export default AuthContext;

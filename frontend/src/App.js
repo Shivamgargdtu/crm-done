@@ -73,8 +73,7 @@ function AppRoutes() {
                 <Route path="leads" element={<AllLeads />} />
                 <Route path="leads/:id" element={<LeadOverview />} />
                 <Route path="pipeline" element={<Pipeline />} />
-                
-                {/* Category Routes */}
+
                 <Route path="category/meeting-done" element={<CategoryPage category="Meeting Done" />} />
                 <Route path="category/interested" element={<CategoryPage category="Interested" />} />
                 <Route path="category/call-back" element={<CategoryPage category="Call Back" />} />
@@ -84,8 +83,7 @@ function AppRoutes() {
                 <Route path="category/future-projection" element={<CategoryPage category="Future Projection" />} />
                 <Route path="category/needs-review" element={<CategoryPage category="Needs Review" />} />
                 <Route path="category/not-interested" element={<CategoryPage category="Not Interested" />} />
-                
-                {/* Other Routes */}
+
                 <Route path="instagram" element={<PlaceholderPage title="Instagram Leads" description="Leads sourced from Instagram." />} />
                 <Route path="whatsapp" element={<PlaceholderPage title="WhatsApp Leads" description="Leads with WhatsApp contacts." />} />
                 <Route path="calendar" element={<Calendar />} />

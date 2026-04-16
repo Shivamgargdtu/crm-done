@@ -58,6 +58,51 @@ def hash_password(password: str) -> str:
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     return bcrypt.checkpw(plain_password.encode("utf-8"), hashed_password.encode("utf-8"))
 
+# ============== COOKIE HELPERS (FIX: cross-site cookie support) ==============
+
+def _cookie_flags() -> dict:
+    """
+    Return secure/samesite values that work for both local dev and
+    cross-origin production (Vercel frontend → Railway backend).
+
+    Rules:
+      - FRONTEND_URL starts with https  → production path: secure=True, samesite="none"
+      - Otherwise (localhost)           → dev path: secure=False, samesite="lax"
+    You can override either flag explicitly via env vars COOKIE_SECURE / COOKIE_SAMESITE.
+    """
+    frontend_url = os.environ.get("FRONTEND_URL", "http://localhost:3000").rstrip("/")
+
+    # Explicit overrides from env
+    samesite_override = os.environ.get("COOKIE_SAMESITE", "").strip().lower()
+    secure_override   = os.environ.get("COOKIE_SECURE",   "").strip().lower()
+
+    if samesite_override:
+        samesite = samesite_override
+    else:
+        samesite = "none" if frontend_url.startswith("https://") else "lax"
+
+    if secure_override:
+        secure = secure_override in {"1", "true", "yes", "on"}
+    else:
+        # samesite=none REQUIRES secure=True per RFC 6265bis
+        secure = samesite == "none" or frontend_url.startswith("https://")
+
+    return {"secure": secure, "samesite": samesite}
+
+
+def set_cookie(response: Response, key: str, value: str, max_age: int) -> None:
+    flags = _cookie_flags()
+    response.set_cookie(
+        key=key,
+        value=value,
+        httponly=True,
+        secure=flags["secure"],
+        samesite=flags["samesite"],
+        max_age=max_age,
+        path="/",
+    )
+
+
 def create_access_token(user_id: str, email: str, role: str) -> str:
     payload = {
         "sub": user_id,
@@ -355,11 +400,9 @@ def parse_date(value) -> Optional[str]:
     if not value or pd.isna(value):
         return None
     
-    # If already datetime
     if isinstance(value, datetime):
         return value.isoformat()
     
-    # Excel serial number
     if isinstance(value, (int, float)):
         try:
             excel_date = pd.Timestamp('1899-12-30') + pd.Timedelta(days=int(value))
@@ -429,9 +472,10 @@ async def login(credentials: UserLogin, response: Response):
     user_id = str(user["_id"])
     access_token = create_access_token(user_id, email, user["role"])
     refresh_token = create_refresh_token(user_id)
-    
-    response.set_cookie(key="access_token", value=access_token, httponly=True, secure=False, samesite="lax", max_age=900, path="/")
-    response.set_cookie(key="refresh_token", value=refresh_token, httponly=True, secure=False, samesite="lax", max_age=604800, path="/")
+
+    # FIX: use set_cookie helper so flags are correct for production cross-origin
+    set_cookie(response, "access_token", access_token, 900)
+    set_cookie(response, "refresh_token", refresh_token, 604800)
     
     user_data = serialize_doc(user)
     user_data.pop("password_hash", None)
@@ -466,8 +510,9 @@ async def refresh_token(request: Request, response: Response):
         
         user_id = str(user["_id"])
         access_token = create_access_token(user_id, user["email"], user["role"])
-        
-        response.set_cookie(key="access_token", value=access_token, httponly=True, secure=False, samesite="lax", max_age=900, path="/")
+
+        # FIX: use set_cookie helper
+        set_cookie(response, "access_token", access_token, 900)
         
         return {"message": "Token refreshed"}
     except jwt.ExpiredSignatureError:
@@ -515,10 +560,11 @@ async def update_profile(body: ProfileUpdate, request: Request, response: Respon
 
     await db.users.update_one({"_id": ObjectId(user_id)}, {"$set": update})
 
-    # If email changed, re-issue tokens with new email
     updated_user = await db.users.find_one({"_id": ObjectId(user_id)})
     new_access = create_access_token(user_id, updated_user["email"], updated_user["role"])
-    response.set_cookie(key="access_token", value=new_access, httponly=True, secure=False, samesite="lax", max_age=900, path="/")
+
+    # FIX: use set_cookie helper
+    set_cookie(response, "access_token", new_access, 900)
 
     result = serialize_doc(updated_user)
     result.pop("password_hash", None)
@@ -659,7 +705,6 @@ async def get_leads(
     
     query = {}
     
-    # Team members can only see their assigned leads
     if user["role"] == "team_member":
         query["assignedTo"] = user["id"]
     elif assignedTo:
@@ -707,7 +752,6 @@ async def get_leads(
         else:
             query = search_query
     
-    # Build sort
     sort_list = []
     if sortField:
         sort_list.append((sortField, sortDirection))
@@ -761,14 +805,12 @@ async def get_leads_count(request: Request):
 
 @api_router.get("/leads/cities")
 async def get_cities(request: Request):
-    """Get unique cities for filter dropdown"""
     await get_current_user(request)
     cities = await db.leads.distinct("city")
     return [c for c in cities if c]
 
 @api_router.get("/leads/sources")
 async def get_sources(request: Request):
-    """Get unique sources for filter dropdown"""
     await get_current_user(request)
     sources = await db.leads.distinct("sourceSheet")
     return [s for s in sources if s]
@@ -812,7 +854,6 @@ async def export_leads(
         writer = csv.DictWriter(output, fieldnames=leads[0].keys())
         writer.writeheader()
         for lead in leads:
-            # Flatten responseHistory
             if 'responseHistory' in lead:
                 lead['responseHistory'] = str(lead['responseHistory'])
             writer.writerow(lead)
@@ -832,7 +873,6 @@ async def get_lead(lead_id: str, request: Request):
     if not lead:
         raise HTTPException(status_code=404, detail="Lead not found")
     
-    # Check access
     if user["role"] == "team_member" and lead.get("assignedTo") != user["id"]:
         raise HTTPException(status_code=403, detail="Access denied")
     
@@ -852,7 +892,6 @@ async def create_lead(lead: LeadCreate, request: Request):
     lead_data["mostCommonResponse"] = None
     lead_data["mostCommonResponseRank"] = None
     
-    # Check for duplicates
     await check_and_mark_duplicate(lead_data)
     
     result = await db.leads.insert_one(lead_data)
@@ -868,14 +907,12 @@ async def update_lead(lead_id: str, lead_update: LeadUpdate, request: Request):
     if not lead:
         raise HTTPException(status_code=404, detail="Lead not found")
     
-    # Check access
     if user["role"] == "team_member" and lead.get("assignedTo") != user["id"]:
         raise HTTPException(status_code=403, detail="Access denied")
     
     update_data = {k: v for k, v in lead_update.model_dump().items() if v is not None}
     update_data = calculate_ranks(update_data)
     
-    # If category changed to Not Interested, set dateMarkedNotInterested
     if update_data.get("category") == "Not Interested" and lead.get("category") != "Not Interested":
         update_data["dateMarkedNotInterested"] = datetime.now(timezone.utc).isoformat()
     
@@ -896,7 +933,6 @@ async def patch_lead(lead_id: str, updates: dict, request: Request):
     if user["role"] == "team_member" and lead.get("assignedTo") != user["id"]:
         raise HTTPException(status_code=403, detail="Access denied")
     
-    # Recalculate ranks if needed
     updates = calculate_ranks(updates)
     
     await db.leads.update_one({"_id": ObjectId(lead_id)}, {"$set": updates})
@@ -920,7 +956,6 @@ async def add_response_history(lead_id: str, entry: ResponseHistoryEntry, reques
     entry_data["teamMember"] = user["id"]
     entry_data["teamMemberName"] = user.get("name", "Unknown")
     
-    # Update response history and recalculate most common response
     response_history = lead.get("responseHistory", [])
     response_history.append(entry_data)
     
@@ -932,7 +967,6 @@ async def add_response_history(lead_id: str, entry: ResponseHistoryEntry, reques
         "lastContactDate": entry_data["timestamp"]
     }
     
-    # Update category based on response
     response_to_category = {
         "Interested": "Interested",
         "Not Interested": "Not Interested",
@@ -948,7 +982,6 @@ async def add_response_history(lead_id: str, entry: ResponseHistoryEntry, reques
         update_data["category"] = new_cat
         update_data["categoryRank"] = CATEGORY_RANK.get(new_cat, 99)
     
-    # Update portfolio/pricelist/wa sent flags
     if entry_data.get("portfolioSent"):
         update_data["portfolioSent"] = True
     if entry_data.get("priceListSent"):
@@ -956,7 +989,6 @@ async def add_response_history(lead_id: str, entry: ResponseHistoryEntry, reques
     if entry_data.get("waSent"):
         update_data["waSent"] = True
     
-    # Update next follow-up
     if entry_data.get("nextFollowupDate"):
         update_data["nextFollowupDate"] = entry_data["nextFollowupDate"]
     
@@ -987,7 +1019,6 @@ class ChattingViaUpdate(BaseModel):
 
 @api_router.put("/leads/{lead_id}/chatting-via")
 async def update_chatting_via(lead_id: str, body: ChattingViaUpdate, request: Request):
-    """Quick update the chattingVia field for a lead."""
     user = await get_current_user(request)
     lead = await db.leads.find_one({"_id": ObjectId(lead_id)})
     if not lead:
@@ -1045,14 +1076,12 @@ async def bulk_action(action: BulkAction, request: Request):
 
 async def check_and_mark_duplicate(lead_data: dict, exclude_id: str = None) -> Optional[dict]:
     """Check if lead is duplicate and mark it. Respects global setting."""
-    # Check if duplicate detection is enabled
     settings = await db.settings.find_one({"_id": "app_settings"})
     if settings and not settings.get("duplicateDetectionEnabled", True):
         return None
 
     query_conditions = []
     
-    # Check phone numbers
     for field in ['phone', 'phone2', 'whatsapp']:
         if lead_data.get(field):
             cleaned = clean_phone(lead_data[field])
@@ -1061,13 +1090,11 @@ async def check_and_mark_duplicate(lead_data: dict, exclude_id: str = None) -> O
                 query_conditions.append({"phone2": {"$regex": cleaned}})
                 query_conditions.append({"whatsapp": {"$regex": cleaned}})
     
-    # Check instagram
     if lead_data.get('instagram'):
         cleaned = clean_instagram(lead_data['instagram'])
         if cleaned:
             query_conditions.append({"instagram": {"$regex": f"^@?{cleaned}$", "$options": "i"}})
     
-    # Check company name + city
     if lead_data.get('companyName') and lead_data.get('city'):
         company_clean = re.sub(r'\s+', '', lead_data['companyName'].lower())
         city_clean = re.sub(r'\s+', '', lead_data['city'].lower())
@@ -1098,7 +1125,6 @@ async def detect_duplicates(request: Request):
     """Detect and mark all duplicates in database"""
     await require_admin(request)
     
-    # Reset all duplicate flags first
     await db.leads.update_many({}, {"$set": {"isDuplicate": False, "duplicateOf": None}})
     
     leads = await db.leads.find({}, {"_id": 1, "phone": 1, "phone2": 1, "whatsapp": 1, "instagram": 1, "companyName": 1, "city": 1}).to_list(None)
@@ -1112,7 +1138,6 @@ async def detect_duplicates(request: Request):
         lead_id = str(lead["_id"])
         duplicate_of = None
         
-        # Check phones
         for field in ['phone', 'phone2', 'whatsapp']:
             if lead.get(field):
                 cleaned = clean_phone(lead[field])
@@ -1122,7 +1147,6 @@ async def detect_duplicates(request: Request):
                         break
                     phone_map[cleaned] = lead_id
         
-        # Check instagram
         if not duplicate_of and lead.get('instagram'):
             cleaned = clean_instagram(lead['instagram'])
             if cleaned:
@@ -1131,9 +1155,9 @@ async def detect_duplicates(request: Request):
                 else:
                     instagram_map[cleaned] = lead_id
         
-        # Check company+city
+        # FIX: was r's+' (missing backslash) — corrected to r'\s+'
         if not duplicate_of and lead.get('companyName') and lead.get('city'):
-            key = f"{re.sub(r's+', '', lead['companyName'].lower())}_{re.sub(r's+', '', lead['city'].lower())}"
+            key = f"{re.sub(r'\s+', '', lead['companyName'].lower())}_{re.sub(r'\s+', '', lead['city'].lower())}"
             if key in company_city_map:
                 duplicate_of = company_city_map[key]
             else:
@@ -1150,7 +1174,6 @@ async def detect_duplicates(request: Request):
 
 @api_router.post("/leads/{lead_id}/dismiss-duplicate")
 async def dismiss_duplicate(lead_id: str, request: Request):
-    """Dismiss duplicate flag"""
     await get_current_user(request)
     
     await db.leads.update_one(
@@ -1161,14 +1184,12 @@ async def dismiss_duplicate(lead_id: str, request: Request):
 
 @api_router.get("/leads/{lead_id}/duplicates")
 async def get_lead_duplicates(lead_id: str, request: Request):
-    """Get all duplicates of a lead"""
     await get_current_user(request)
     
     lead = await db.leads.find_one({"_id": ObjectId(lead_id)})
     if not lead:
         raise HTTPException(status_code=404, detail="Lead not found")
     
-    # Find all leads with same duplicateOf or that are duplicateOf this lead
     duplicate_ids = [lead_id]
     if lead.get("duplicateOf"):
         duplicate_ids.append(lead["duplicateOf"])
@@ -1315,7 +1336,6 @@ async def analyze_import(request: Request, file: UploadFile = File(...)):
             existing = await check_and_mark_duplicate(lead_data)
             if existing:
                 reason = get_match_reason(lead_data, existing)
-                # Strip internal fields from incoming for frontend display
                 incoming_clean = {k: v for k, v in lead_data.items() if k not in ['isDuplicate', 'duplicateOf', 'duplicateDismissed']}
                 duplicates.append({
                     "rowIndex": idx + 2,
@@ -1352,7 +1372,6 @@ async def batch_import_leads(body: BatchImportRequest, request: Request):
 
     for i, lead_data in enumerate(body.leads):
         try:
-            # Remove any stale ObjectId-like fields
             lead_data.pop("id", None)
             lead_data.pop("_id", None)
             await db.leads.insert_one(lead_data)
@@ -1420,17 +1439,14 @@ async def resolve_duplicates_import(body: ResolveRequest, request: Request):
                         continue
                     existing_val = existing.get(key)
                     incoming_val = res.incoming.get(key)
-                    # For responseHistory, combine both
                     if key == "responseHistory":
                         existing_hist = existing_val if isinstance(existing_val, list) else []
                         incoming_hist = incoming_val if isinstance(incoming_val, list) else []
                         merged_data[key] = existing_hist + incoming_hist
                         continue
-                    # For callCount, sum them
                     if key == "callCount":
                         merged_data[key] = (existing_val or 0) + (incoming_val or 0)
                         continue
-                    # Prefer non-empty incoming value, else keep existing
                     if incoming_val and incoming_val != "" and incoming_val != "Needs Review":
                         merged_data[key] = incoming_val
                     elif existing_val:
@@ -1443,7 +1459,6 @@ async def resolve_duplicates_import(body: ResolveRequest, request: Request):
                 merged_data.pop("id", None)
                 merged_data.pop("_id", None)
 
-                # Recalculate most common response
                 if merged_data.get("responseHistory"):
                     mc, rank = calculate_most_common_response(merged_data["responseHistory"])
                     merged_data["mostCommonResponse"] = mc
@@ -1465,7 +1480,6 @@ async def resolve_duplicates_import(body: ResolveRequest, request: Request):
     }
 
 
-# Keep legacy import endpoint for backward compat
 @api_router.post("/leads/import")
 async def import_leads(request: Request, file: UploadFile = File(...)):
     """Legacy import - auto-skips duplicates"""
@@ -1554,14 +1568,12 @@ class TemplateUpdate(BaseModel):
 
 @api_router.get("/templates")
 async def get_templates(request: Request):
-    """Get all WhatsApp message templates."""
     await get_current_user(request)
     templates = await db.templates.find({}).sort("category", 1).to_list(200)
     return [serialize_doc(t) for t in templates]
 
 @api_router.post("/templates")
 async def create_template(body: TemplateCreate, request: Request):
-    """Create a WhatsApp message template (admin only)."""
     user = await require_admin(request)
     doc = {
         "name": body.name.strip(),
@@ -1576,7 +1588,6 @@ async def create_template(body: TemplateCreate, request: Request):
 
 @api_router.put("/templates/{template_id}")
 async def update_template(template_id: str, body: TemplateUpdate, request: Request):
-    """Update a WhatsApp message template (admin only)."""
     await require_admin(request)
     update = {}
     if body.name is not None:
@@ -1595,7 +1606,6 @@ async def update_template(template_id: str, body: TemplateUpdate, request: Reque
 
 @api_router.delete("/templates/{template_id}")
 async def delete_template(template_id: str, request: Request):
-    """Delete a WhatsApp message template (admin only)."""
     await require_admin(request)
     result = await db.templates.delete_one({"_id": ObjectId(template_id)})
     if result.deleted_count == 0:
@@ -1610,7 +1620,6 @@ async def get_calendar_events(
     month: int = Query(..., ge=1, le=12),
     year: int = Query(..., ge=2020, le=2100)
 ):
-    """Get leads with meetings or follow-ups in a given month."""
     user = await get_current_user(request)
     base_query = {}
     if user["role"] == "team_member":
@@ -1625,11 +1634,9 @@ async def get_calendar_events(
     start_iso = start.isoformat()
     end_iso = end.isoformat()
 
-    # Follow-ups in this month
     followup_query = {**base_query, "nextFollowupDate": {"$gte": start_iso, "$lt": end_iso}}
     followups = await db.leads.find(followup_query).to_list(500)
 
-    # Meetings (pipeline stage = Meeting Scheduled or Meeting Done) with response history timestamps
     meeting_query = {
         **base_query,
         "pipelineStage": {"$in": ["Meeting Scheduled", "Meeting Done"]}
@@ -1651,7 +1658,6 @@ async def get_calendar_events(
     for lead in meetings:
         lid = str(lead["_id"])
         if lid not in seen_ids:
-            # Use nextFollowupDate or lastContactDate as event date
             event_date = lead.get("nextFollowupDate") or lead.get("lastContactDate") or lead.get("dateAdded")
             events.append({
                 **serialize_doc(lead),
@@ -1665,7 +1671,6 @@ async def get_calendar_events(
 
 @api_router.get("/reminders")
 async def get_reminders(request: Request):
-    """Get overdue and upcoming follow-up reminders."""
     user = await get_current_user(request)
     base_query = {}
     if user["role"] == "team_member":
@@ -1677,19 +1682,15 @@ async def get_reminders(request: Request):
     tomorrow_end = today_start + timedelta(days=2)
     week_end = today_start + timedelta(days=7)
 
-    # Overdue: follow-up date < today
     overdue_q = {**base_query, "nextFollowupDate": {"$lt": today_start.isoformat(), "$ne": None}}
     overdue = await db.leads.find(overdue_q).sort("nextFollowupDate", 1).to_list(100)
 
-    # Today
     today_q = {**base_query, "nextFollowupDate": {"$gte": today_start.isoformat(), "$lt": today_end.isoformat()}}
     today_leads = await db.leads.find(today_q).sort("nextFollowupDate", 1).to_list(100)
 
-    # Tomorrow
     tomorrow_q = {**base_query, "nextFollowupDate": {"$gte": today_end.isoformat(), "$lt": tomorrow_end.isoformat()}}
     tomorrow_leads = await db.leads.find(tomorrow_q).sort("nextFollowupDate", 1).to_list(100)
 
-    # This week (rest of week after tomorrow)
     week_q = {**base_query, "nextFollowupDate": {"$gte": tomorrow_end.isoformat(), "$lt": week_end.isoformat()}}
     week_leads = await db.leads.find(week_q).sort("nextFollowupDate", 1).to_list(200)
 
@@ -1720,19 +1721,16 @@ async def get_dashboard_stats(request: Request):
     tomorrow = today + timedelta(days=1)
     week_end = today + timedelta(days=7)
     
-    # Pipeline stages breakdown
     pipeline_stats = []
     for stage in PIPELINE_STAGES:
         count = await db.leads.count_documents({**base_query, "pipelineStage": stage})
         pipeline_stats.append({"stage": stage, "count": count})
     
-    # Category breakdown
     category_stats = []
     for cat, rank in CATEGORY_RANK.items():
         count = await db.leads.count_documents({**base_query, "category": cat})
         category_stats.append({"category": cat, "count": count, "rank": rank})
     
-    # Priority breakdown
     priority_stats = []
     for pri, rank in PRIORITY_RANK.items():
         count = await db.leads.count_documents({**base_query, "priority": pri})
@@ -1756,7 +1754,6 @@ async def get_dashboard_stats(request: Request):
 
 @api_router.get("/responses")
 async def get_response_options(request: Request):
-    """Get all available response options"""
     await get_current_user(request)
     return ALL_RESPONSES
 
@@ -1764,7 +1761,6 @@ async def get_response_options(request: Request):
 
 @app.on_event("startup")
 async def startup_db():
-    # Create indexes
     await db.users.create_index("email", unique=True)
     await db.leads.create_index("category")
     await db.leads.create_index("priority")
@@ -1778,7 +1774,6 @@ async def startup_db():
     await db.leads.create_index([("categoryRank", 1), ("priorityRank", 1)])
     await db.leads.create_index([("companyName", "text"), ("city", "text")])
     
-    # Seed admin
     admin_email = os.environ.get("ADMIN_EMAIL", "admin@wedus.com").lower()
     admin_password = os.environ.get("ADMIN_PASSWORD", "admin123")
     
@@ -1794,7 +1789,6 @@ async def startup_db():
         })
         logger.info(f"Admin user created: {admin_email}")
     
-    # Seed sample team members
     sample_team = [
         {"name": "Priya Sharma", "email": "priya@wedus.com", "color": "#3B82F6"},
         {"name": "Rahul Mehta", "email": "rahul@wedus.com", "color": "#10B981"},
@@ -1814,23 +1808,25 @@ async def startup_db():
             })
             logger.info(f"Team member created: {member['email']}")
     
-    # Write test credentials
-    Path("/app/memory").mkdir(parents=True, exist_ok=True)
-    with open("/app/memory/test_credentials.md", "w") as f:
-        f.write("# Wed Us CRM Test Credentials\n\n")
-        f.write("## Admin Account\n")
-        f.write(f"- Email: {admin_email}\n")
-        f.write(f"- Password: {admin_password}\n")
-        f.write("- Role: admin\n\n")
-        f.write("## Team Members\n")
-        for member in sample_team:
-            f.write(f"- Email: {member['email']}\n")
-            f.write("- Password: team123\n")
-            f.write("- Role: team_member\n\n")
+    # Write test credentials (only if path is writable — skip silently in prod)
+    try:
+        Path("/app/memory").mkdir(parents=True, exist_ok=True)
+        with open("/app/memory/test_credentials.md", "w") as f:
+            f.write("# Wed Us CRM Test Credentials\n\n")
+            f.write("## Admin Account\n")
+            f.write(f"- Email: {admin_email}\n")
+            f.write(f"- Password: {admin_password}\n")
+            f.write("- Role: admin\n\n")
+            f.write("## Team Members\n")
+            for member in sample_team:
+                f.write(f"- Email: {member['email']}\n")
+                f.write("- Password: team123\n")
+                f.write("- Role: team_member\n\n")
+    except Exception:
+        pass
     
     logger.info("Database initialized successfully")
 
-    # Seed default WhatsApp templates
     template_count = await db.templates.count_documents({})
     if template_count == 0:
         default_templates = [
@@ -1853,27 +1849,26 @@ async def startup_db():
 async def shutdown_db_client():
     client.close()
 
-# Root endpoint
+# ============== ROOT / HEALTH ==============
+
 @api_router.get("/")
 async def root():
     return {"message": "Wed Us CRM API", "version": "1.0.0"}
 
-# Health check (no /api prefix — sits on app directly for Railway/infra probes)
 @app.get("/health")
 async def health_check():
     return {"status": "ok"}
 
-# Include the router in the main app
+# Include the router
 app.include_router(api_router)
 
-# CORS — allow frontend origin from env
-_cors_origins_raw = os.environ.get("CORS_ORIGINS", "")
-_frontend_url = os.environ.get("FRONTEND_URL", "http://localhost:3000")
+# ============== CORS (FIX: correct cross-origin setup) ==============
+# Build allowed origins list — never use "*" with credentials.
+_cors_origins_raw = os.environ.get("CORS_ORIGINS", "").strip()
+_frontend_url = os.environ.get("FRONTEND_URL", "http://localhost:3000").rstrip("/")
 
-if _cors_origins_raw == "*":
-    _allowed_origins = ["*"]
-elif _cors_origins_raw:
-    _allowed_origins = [o.strip() for o in _cors_origins_raw.split(",") if o.strip()]
+if _cors_origins_raw:
+    _allowed_origins = [o.strip().rstrip("/") for o in _cors_origins_raw.split(",") if o.strip()]
 else:
     _allowed_origins = [_frontend_url]
     if "http://localhost:3000" not in _allowed_origins:
@@ -1881,8 +1876,8 @@ else:
 
 app.add_middleware(
     CORSMiddleware,
-    allow_credentials=True if _allowed_origins != ["*"] else False,
-    allow_origins=_allowed_origins,
+    allow_origins=_allowed_origins,   # explicit list — no wildcard
+    allow_credentials=True,           # required for cookies
     allow_methods=["*"],
     allow_headers=["*"],
 )
